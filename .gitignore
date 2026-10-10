@@ -1,0 +1,8 @@
+.env
+!.env.example
+supabase/.env
+supabase/.temp/
+node_modules/
+megathon_access_*.json
+
+bumblebee2 (2).zip

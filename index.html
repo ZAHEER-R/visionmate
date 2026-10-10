@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#080d13">
+  <meta name="description" content="VisionMate: your eyes, your voice, your independence.">
+  <title>VisionMate — Your companion</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <link rel="stylesheet" href="./css/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js" defer></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script type="module" src="./js/app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="VisionMate home" data-nav="home">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+        <span>vision<span class="brand-light">mate</span></span>
+      </a>
+      <div class="topbar-right">
+        <span class="status-pill"><span class="status-dot"></span><span id="connection-label">Ready when you are</span></span>
+        <button id="audio-toggle" class="icon-button" type="button" aria-label="Turn spoken feedback off" title="Spoken feedback">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5Zm4 4a4 4 0 0 1 0 6m3-9a8 8 0 0 1 0 12"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main id="main-content" tabindex="-1">
+      <section id="view-root" aria-live="polite" aria-atomic="false"></section>
+    </main>
+
+    <nav id="bottom-nav" class="bottom-nav" aria-label="Main navigation" hidden>
+      <button type="button" data-nav="home" aria-label="Home" aria-current="page">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/></svg><span>Home</span>
+      </button>
+      <button type="button" data-nav="vision" aria-label="Vision companion">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><span>Vision</span>
+      </button>
+      <button type="button" data-nav="voice" aria-label="Voice agent">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4m-4 0h8"/></svg><span>Voice</span>
+      </button>
+      <button type="button" data-nav="translate" aria-label="Translator">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h12M10 3v2m5 0c0 6-4 10-9 12m1-8c1.5 3 4.5 6 8 7m-1 3 4-9 4 9m-6.5-3h5"/></svg><span>Translate</span>
+      </button>
+      <button type="button" data-nav="me" aria-label="Profile and settings">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span>Me</span>
+      </button>
+    </nav>
+    <div id="live-feedback" class="sr-only" role="status" aria-live="assertive"></div>
+  </div>
+</body>
+</html>
