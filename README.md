@@ -2,7 +2,7 @@
 
 VisionMate is an accessible, voice-first web companion for blind and low-vision people. It brings together camera-based visual assistance, text reading, translation, approximate route estimates, notes, reminders, and emergency contacts in a mobile-friendly interface.
 
-**Try VisionMate:** [visionmate.vercel.app](https://visionmate.vercel.app)
+**Try VisionMate:** [visionmate-one.vercel.app](https://visionmate-one.vercel.app)
 
 VisionMate is an installable website (PWA), not a native Android app. It does not control other apps, listen for background wake words, read hardware volume buttons, or display over other apps.
 
@@ -12,7 +12,7 @@ VisionMate is an installable website (PWA), not a native Android app. It does no
 
 ## Get started
 
-1. Open [visionmate.vercel.app](https://visionmate.vercel.app) in a current mobile or desktop browser. Use HTTPS for camera, microphone, and location features.
+1. Open [visionmate-one.vercel.app](https://visionmate-one.vercel.app) in a current mobile or desktop browser. Use HTTPS for camera, microphone, and location features.
 2. Choose **Continue as guest** to start without creating an account. Guest profile information, notes, reminders, and chat history stay in that browser on that device.
 3. Explore using the large on-screen controls or supported voice commands. If spoken feedback does not play, interact with the page once; browser autoplay policies may block audio until then.
 4. Sign in from **Me** only if account sync is configured and you want your information associated with an account.
