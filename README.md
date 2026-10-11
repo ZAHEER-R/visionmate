@@ -3,7 +3,7 @@
 
 VisionMate is an accessible, voice-first web companion for blind and low-vision people. It brings together camera-based visual assistance, text reading, translation, approximate route estimates, notes, reminders, and emergency contacts in a mobile-friendly interface.
 
-**Try VisionMate:** [visionmate.vercel.app](https://visionmate.vercel.app)
+**Try VisionMate:** [visionmate-one.vercel.app](https://visionmate-one.vercel.app)
 
 VisionMate is an installable website (PWA), not a native Android app. It does not control other apps, listen for background wake words, read hardware volume buttons, or display over other apps.
 
@@ -13,7 +13,7 @@ VisionMate is an installable website (PWA), not a native Android app. It does no
 
 ## Get started
 
-1. Open [visionmate.vercel.app](https://visionmate.vercel.app) in a current mobile or desktop browser. Use HTTPS for camera, microphone, and location features.
+1. Open [visionmate-one.vercel.app](https://visionmate-one.vercel.app) in a current mobile or desktop browser. Use HTTPS for camera, microphone, and location features.
 2. Choose **Continue as guest** to start without creating an account. Guest profile information, notes, reminders, and chat history stay in that browser on that device.
 3. Explore using the large on-screen controls or supported voice commands. If spoken feedback does not play, interact with the page once; browser autoplay policies may block audio until then.
 4. Sign in from **Me** only if account sync is configured and you want your information associated with an account.
@@ -62,17 +62,26 @@ Use ordinary page scrolling and browser pinch zoom. Mobile browsers control perm
 
 ## Product showcase
 
-<p align="center"><img src="assets/preview1.png" alt="VisionMate app preview 1" width="720"></p>
-<p align="center"><img src="assets/preview2.png" alt="VisionMate app preview 2" width="720"></p>
-<p align="center"><img src="assets/preview3.png" alt="VisionMate app preview 3" width="720"></p>
-<p align="center"><img src="assets/preview4.png" alt="VisionMate app preview 4" width="720"></p>
-<p align="center"><img src="assets/preview5.png" alt="VisionMate app preview 5" width="720"></p>
-<p align="center"><img src="assets/preview6.png" alt="VisionMate app preview 6" width="720"></p>
-<p align="center"><img src="assets/preview7.png" alt="VisionMate app preview 7" width="720"></p>
-<p align="center"><img src="assets/preview8.png" alt="VisionMate app preview 8" width="720"></p>
-<p align="center"><img src="assets/preview9.png" alt="VisionMate app preview 9" width="720"></p>
-<p align="center"><img src="assets/preview10.png" alt="VisionMate app preview 10" width="720"></p>
-<p align="center"><img src="assets/preview11.png" alt="VisionMate app preview 11" width="720"></p>
+<table align="center">
+  <tr>
+    <td width="25%"><img src="assets/preview1.png" alt="VisionMate app preview 1" width="100%"></td>
+    <td width="25%"><img src="assets/preview2.png" alt="VisionMate app preview 2" width="100%"></td>
+    <td width="25%"><img src="assets/preview3.png" alt="VisionMate app preview 3" width="100%"></td>
+    <td width="25%"><img src="assets/preview4.png" alt="VisionMate app preview 4" width="100%"></td>
+  </tr>
+  <tr>
+    <td width="25%"><img src="assets/preview5.png" alt="VisionMate app preview 5" width="100%"></td>
+    <td width="25%"><img src="assets/preview6.png" alt="VisionMate app preview 6" width="100%"></td>
+    <td width="25%"><img src="assets/preview7.png" alt="VisionMate app preview 7" width="100%"></td>
+    <td width="25%"><img src="assets/preview8.png" alt="VisionMate app preview 8" width="100%"></td>
+  </tr>
+  <tr>
+    <td width="25%"><img src="assets/preview9.png" alt="VisionMate app preview 9" width="100%"></td>
+    <td width="25%"><img src="assets/preview10.png" alt="VisionMate app preview 10" width="100%"></td>
+    <td width="25%"><img src="assets/preview11.png" alt="VisionMate app preview 11" width="100%"></td>
+    <td width="25%"></td>
+  </tr>
+</table>
 
 ## Safety, privacy, and limits
 
@@ -91,15 +100,15 @@ The frontend is plain HTML, CSS, and browser JavaScript modules. There is no roo
 2. Copy `.env.example` to `.env` and set the public `SUPABASE_URL` and `SUPABASE_ANON_KEY`. Add Firebase Web App values only if enabling sign-in.
 3. Generate the ignored browser config:
 
-   ```powershell
+```powershell
    node scripts/build-config.mjs
-   ```
+```
 
 4. Serve the repository root using VS Code Live Server or another local static web server, then open its local URL. For example, if Python is already installed:
 
-   ```powershell
+```powershell
    py -m http.server 8000
-   ```
+```
 
    Visit `http://localhost:8000`.
 
@@ -126,6 +135,7 @@ This repository can be deployed as a static site to Vercel or Firebase Hosting. 
 ```text
 .
 ├── index.html
+├── LICENSE
 ├── assets/                 # Logo, icons, and app preview images
 ├── css/styles.css          # Layout, responsive styling, and accessibility
 ├── js/                     # App screens, voice, camera, auth, data, and routes
@@ -141,7 +151,7 @@ This repository can be deployed as a static site to Vercel or Firebase Hosting. 
 
 ## License and contact
 
-No license file is currently included in this repository. For product inquiries, support, or collaboration, use the contact information on the [VisionMate website](https://visionmate.vercel.app) or contact the project team through its organization.
+VisionMate is released under the [MIT License](./LICENSE). For product inquiries, support, or collaboration, use the contact information on the [VisionMate website](https://visionmate.vercel.app) or contact the project team through its organization.
 
 ---
 
@@ -210,17 +220,26 @@ Use ordinary page scrolling and browser pinch zoom. Mobile browsers control perm
 
 ## Product showcase
 
-<p align="center"><img src="assets/preview1.png" alt="VisionMate app preview 1" width="720"></p>
-<p align="center"><img src="assets/preview2.png" alt="VisionMate app preview 2" width="720"></p>
-<p align="center"><img src="assets/preview3.png" alt="VisionMate app preview 3" width="720"></p>
-<p align="center"><img src="assets/preview4.png" alt="VisionMate app preview 4" width="720"></p>
-<p align="center"><img src="assets/preview5.png" alt="VisionMate app preview 5" width="720"></p>
-<p align="center"><img src="assets/preview6.png" alt="VisionMate app preview 6" width="720"></p>
-<p align="center"><img src="assets/preview7.png" alt="VisionMate app preview 7" width="720"></p>
-<p align="center"><img src="assets/preview8.png" alt="VisionMate app preview 8" width="720"></p>
-<p align="center"><img src="assets/preview9.png" alt="VisionMate app preview 9" width="720"></p>
-<p align="center"><img src="assets/preview10.png" alt="VisionMate app preview 10" width="720"></p>
-<p align="center"><img src="assets/preview11.png" alt="VisionMate app preview 11" width="720"></p>
+<table align="center">
+  <tr>
+    <td width="25%"><img src="assets/preview1.png" alt="VisionMate app preview 1" width="100%"></td>
+    <td width="25%"><img src="assets/preview2.png" alt="VisionMate app preview 2" width="100%"></td>
+    <td width="25%"><img src="assets/preview3.png" alt="VisionMate app preview 3" width="100%"></td>
+    <td width="25%"><img src="assets/preview4.png" alt="VisionMate app preview 4" width="100%"></td>
+  </tr>
+  <tr>
+    <td width="25%"><img src="assets/preview5.png" alt="VisionMate app preview 5" width="100%"></td>
+    <td width="25%"><img src="assets/preview6.png" alt="VisionMate app preview 6" width="100%"></td>
+    <td width="25%"><img src="assets/preview7.png" alt="VisionMate app preview 7" width="100%"></td>
+    <td width="25%"><img src="assets/preview8.png" alt="VisionMate app preview 8" width="100%"></td>
+  </tr>
+  <tr>
+    <td width="25%"><img src="assets/preview9.png" alt="VisionMate app preview 9" width="100%"></td>
+    <td width="25%"><img src="assets/preview10.png" alt="VisionMate app preview 10" width="100%"></td>
+    <td width="25%"><img src="assets/preview11.png" alt="VisionMate app preview 11" width="100%"></td>
+    <td width="25%"></td>
+  </tr>
+</table>
 
 ## Safety, privacy, and limits
 
@@ -239,15 +258,15 @@ The frontend is plain HTML, CSS, and browser JavaScript modules. There is no roo
 2. Copy `.env.example` to `.env` and set the public `SUPABASE_URL` and `SUPABASE_ANON_KEY`. Add Firebase Web App values only if enabling sign-in.
 3. Generate the ignored browser config:
 
-   ```powershell
+```powershell
    node scripts/build-config.mjs
-   ```
+```
 
 4. Serve the repository root using VS Code Live Server or another local static web server, then open its local URL. For example, if Python is already installed:
 
-   ```powershell
+```powershell
    py -m http.server 8000
-   ```
+```
 
    Visit `http://localhost:8000`.
 
@@ -274,6 +293,7 @@ This repository can be deployed as a static site to Vercel or Firebase Hosting. 
 ```text
 .
 ├── index.html
+├── LICENSE
 ├── assets/                 # Logo, icons, and app preview images
 ├── css/styles.css          # Layout, responsive styling, and accessibility
 ├── js/                     # App screens, voice, camera, auth, data, and routes
@@ -289,9 +309,8 @@ This repository can be deployed as a static site to Vercel or Firebase Hosting. 
 
 ## License and contact
 
-No license file is currently included in this repository. For product inquiries, support, or collaboration, use the contact information on the [VisionMate website](https://visionmate.vercel.app) or contact the project team through its organization.
+VisionMate is released under the [MIT License](./LICENSE). For product inquiries, support, or collaboration, use the contact information on the
+[VisionMate website](https://visionmate-one.vercel.app) or contact the project team through its organization.
 
----
 
 VisionMate aims to make everyday digital assistance more accessible, clear, and user-controlled.
->>>>>>> f5e5c51b5272615b039ee8b5a61c198e39f475e9
