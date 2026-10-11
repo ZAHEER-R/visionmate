@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # VisionMate
 
 VisionMate is an accessible, voice-first web companion for blind and low-vision people. It brings together camera-based visual assistance, text reading, translation, approximate route estimates, notes, reminders, and emergency contacts in a mobile-friendly interface.
