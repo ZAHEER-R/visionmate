@@ -89,6 +89,19 @@ export async function invokeAssistant({ prompt, imageBase64, mimeType = "image/j
   return data;
 }
 
+export async function generateGeminiSpeech({ text, language }) {
+  const client = await getSupabaseClient();
+  if (!client) throw new Error("Gemini speech is not configured. Set up Supabase and the GEMINI_API_KEY Edge Function secret.");
+  const { data, error } = await client.functions.invoke("gemini-assist", {
+    body: { mode: "speech", text, language }
+  });
+  if (error) throw new Error(await functionErrorMessage(error, "Gemini speech request failed"));
+  if (typeof data?.audioBase64 !== "string" || typeof data?.mimeType !== "string") {
+    throw new Error("Gemini speech returned an invalid audio response.");
+  }
+  return { audioBase64: data.audioBase64, mimeType: data.mimeType };
+}
+
 export async function translateText({ text, sourceLanguage, targetLanguage }) {
   const client = await getSupabaseClient();
   if (!client) throw new Error("Supabase translation is not configured. Set SUPABASE_URL and SUPABASE_ANON_KEY in the deployment environment.");

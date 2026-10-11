@@ -33,6 +33,7 @@ const state = {
   cameraZoom: Math.max(1, Math.min(4, Number(localStorage.getItem("visionmate.cameraZoom")) || 1)),
   map: null,
   mapMarker: null,
+  routeMap: null,
   locationWatchId: null,
   menuPhotoUrl: null,
   pendingCall: null,
@@ -49,6 +50,10 @@ const state = {
 };
 
 speech.setLanguage(state.language);
+if (!localStorage.getItem("visionmate.speechEngine") && state.language !== "en") {
+  speech.setEngine("gemini");
+  localStorage.setItem("visionmate.speechEngine", "gemini");
+}
 
 const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, character => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -130,6 +135,18 @@ function pageAnnouncement(page) {
     emergency: "Emergency support. Phone calls require your confirmation and device support."
   };
   return messages[page] || "";
+}
+
+function languageConfirmation(language) {
+  return {
+    en: "Spoken language set to English.",
+    hi: "बोली जाने वाली भाषा हिंदी पर सेट है।",
+    ta: "பேசும் மொழி தமிழாக மாற்றப்பட்டது.",
+    te: "మాట్లాడే భాష తెలుగుకు మార్చబడింది.",
+    kn: "ಮಾತನಾಡುವ ಭಾಷೆಯನ್ನು ಕನ್ನಡಕ್ಕೆ ಬದಲಿಸಲಾಗಿದೆ.",
+    ml: "സംസാരിക്കുന്ന ഭാഷ മലയാളത്തിലേക്ക് മാറ്റി.",
+    pa: "ਬੋਲੀ ਜਾਣ ਵਾਲੀ ਭਾਸ਼ਾ ਪੰਜਾਬੀ ਵਿੱਚ ਬਦਲ ਦਿੱਤੀ ਗਈ ਹੈ."
+  }[language];
 }
 
 function firebaseConfigurationReady() {
@@ -244,13 +261,14 @@ function renderPermissions() {
     ["camera", "Camera", "Show a live camera preview. No hazard detection is available."],
     ["location", "Location", "Share your location only when you choose, including with SOS."],
     ["notifications", "Notifications", "Receive helpful reminders from this device."],
-    ["microphone", "Microphone", "Use speech recognition when supported by your browser."]
+    ["microphone", "Microphone", "Use speech recognition when supported by your browser."],
+    ["overlay", "Display over other apps", "Native Android permission. A website cannot request or enable this permission."]
   ];
   root.innerHTML = `<div class="page">
     <div class="page-intro"><div class="eyebrow">Optional device access</div><h2>Your permissions</h2><p class="lead">Each permission is optional and requested only after you choose Allow.</p></div>
     <div class="status-banner">${icon("shield")}<div><strong>You’re in control</strong><p>VisionMate will ask your browser only after you tap a permission button. You can skip any of them.</p></div></div>
-    <div class="permission-grid">${permissions.map(([key,label,description]) => `<div class="permission-item" data-animate><div><strong>${label}</strong><span>${description}</span></div><button class="button button-secondary" type="button" data-action="permission" data-permission="${key}">Allow</button></div>`).join("")}</div>
-    <p class="footer-note">“Display over other apps” is an Android-native permission; it can only be enabled when VisionMate is packaged as an APK/TWA.</p>
+    <div class="permission-grid">${permissions.map(([key,label,description]) => `<div class="permission-item" data-animate><div><strong>${label}</strong><span>${description}</span></div>${key === "overlay" ? '<span class="permission-unavailable">Native app only</span>' : `<button class="button button-secondary" type="button" data-action="permission" data-permission="${key}">Allow</button>`}</div>`).join("")}</div>
+    <p class="footer-note">“Display over other apps” is unavailable in this web app. It requires a separately built Android app with the appropriate OS permission and user approval.</p>
     <div class="form-actions"><button class="button button-primary" type="button" data-action="permissions-done">Continue to Home ${icon("arrow")}</button></div>
   </div>`;
 }
@@ -498,6 +516,8 @@ function loadSpeechVoices() {
     speech.voiceName = "";
     localStorage.removeItem("visionmate.voice");
   }
+  const engine = document.querySelector("#speech-engine");
+  if (engine) engine.value = speech.engine;
 }
 
 function renderTranslate() {
@@ -526,6 +546,11 @@ function renderGo() {
         <button class="button button-primary" type="submit">Estimate distance and time</button>
       </form>
       <p id="route-result" class="route-result" role="status" aria-live="polite">No route estimate requested.</p>
+      <section id="route-map-container" class="route-map-container" hidden aria-label="Route map">
+        <h3 id="route-map-heading">Estimated pedestrian route</h3>
+        <div id="route-map" role="region" aria-label="Map showing the estimated route from your current location to the destination"></div>
+        <p class="footer-note">This public route is not verified for accessibility or safety. Map tiles are provided by OpenStreetMap.</p>
+      </section>
       <div class="safety-note"><strong>Informational only.</strong> Distance and time are estimates, not turn-by-turn directions. The route may omit sidewalks, accessible crossings, closures, or hazards. Do not rely on it for safe travel; use a validated navigation aid and your mobility aid or trusted assistance.</div>
     </section>
   </div>`;
@@ -557,6 +582,7 @@ function renderMe() {
     <section style="margin-top:20px"><h3>Preferences</h3><div class="settings-grid">
       <label class="setting-row"><span><strong>Spoken language</strong><span>Voice prompts and speech</span></span><select id="settings-language">${languageOptions()}</select></label>
       <label class="setting-row"><span><strong>Speech voice</strong><span>Choose an installed device voice</span></span><select id="speech-voice" aria-label="Speech voice"></select></label>
+      <label class="setting-row"><span><strong>Speech engine</strong><span>Gemini translates and speaks selected-language feedback online; device voice is faster and can work offline.</span></span><select id="speech-engine" aria-label="Speech engine"><option value="device">Device voice · fast/offline</option><option value="gemini">Gemini voice · online/multilingual</option></select></label>
       <label class="setting-row"><span><strong>Speech speed</strong><span>Adjust spoken feedback pace</span></span><input id="speech-rate" type="range" min="0.7" max="1.2" step="0.05" value="${speech.rate}" aria-label="Speech speed"></label>
       <label class="setting-row"><span><strong>Gemini assistant model</strong><span>Fallback tries configured models if rate-limited</span></span><select id="gemini-model" aria-label="Gemini assistant model"><option value="auto">VisionMate Auto (configured fallback)</option><option value="gemini-2.5-flash">Gemini Flash</option><option value="gemini-2.5-flash-lite">Gemini Flash Lite</option></select></label>
       <label class="setting-row"><span><strong>VisionMate appearance</strong><span>Change this app only, not phone settings</span></span><select id="app-theme" aria-label="VisionMate appearance"><option value="light">Orange and light</option><option value="dark">Dark</option></select></label>
@@ -565,13 +591,14 @@ function renderMe() {
     </div></section>
     <section class="panel" style="padding:22px;margin-top:22px"><h3>Permissions</h3><p class="muted">Camera, location, microphone, and notifications are optional. Manage them in your browser’s site settings or review permissions below.</p><button class="button button-secondary" type="button" data-action="permissions">Review permissions</button></section>
     <div class="form-actions"><button class="button button-danger" type="button" data-action="sign-out">${auth.isGuest() ? "Exit guest session" : "Sign out"}</button></div>
-    <p class="footer-note">Android “display over other apps” is only available after packaging as an APK/TWA. This web prototype cannot access or control other apps.</p>
+    <p class="footer-note">Android “display over other apps” requires a separate native Android implementation. This web app cannot access or control other apps.</p>
   </div>`;
   monitorBattery();
   document.querySelector("#battery-toggle").checked = state.batteryAlerts;
   loadSpeechVoices();
   document.querySelector("#app-theme").value = document.documentElement.dataset.theme || "light";
   document.querySelector("#gemini-model").value = localStorage.getItem("visionmate.model") || "auto";
+  document.querySelector("#speech-engine").value = speech.engine;
   renderProfileChatHistory();
   restoreAccountSettings();
 }
@@ -588,7 +615,7 @@ async function estimateWalkingRoute(form) {
   try {
     const position = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, {
       enableHighAccuracy: true,
-      maximumAge: 60000,
+      maximumAge: 0,
       timeout: 15000
     }));
     const route = await getWalkingRoute({
@@ -600,6 +627,9 @@ async function estimateWalkingRoute(form) {
     const minutes = Math.max(1, Math.round(route.durationSeconds / 60));
     const summary = `Approximate walking route to ${route.destinationName}: ${distance}, about ${minutes} minutes. This is not turn-by-turn or safety guidance.`;
     result.textContent = summary;
+    const mapContainer = document.querySelector("#route-map-container");
+    if (mapContainer) mapContainer.hidden = false;
+    initializeRouteMap(route);
     logActivity("route_estimate_requested", { provider: "openstreetmap" }, "performed");
     speech.speak(summary);
   } catch (error) {
@@ -752,6 +782,12 @@ async function restoreAccountSettings() {
       const rateInput = document.querySelector("#speech-rate");
       if (rateInput) rateInput.value = String(settings.speechRate);
     }
+    if (settings.speechEngine === "device" || settings.speechEngine === "gemini") {
+      speech.setEngine(settings.speechEngine);
+      localStorage.setItem("visionmate.speechEngine", settings.speechEngine);
+      const engineSelect = document.querySelector("#speech-engine");
+      if (engineSelect) engineSelect.value = settings.speechEngine;
+    }
     if (typeof settings.speechVoice === "string") {
       speech.voiceName = settings.speechVoice;
       localStorage.setItem("visionmate.voice", settings.speechVoice);
@@ -800,8 +836,8 @@ function updateAppearance(theme) {
 
 function setSpeechVoice(query) {
   const voices = window.speechSynthesis?.getVoices() || [];
-  const match = voices.find(voice => voice.name.toLowerCase().includes(query.toLowerCase()) ||
-    voice.lang.toLowerCase().includes(query.toLowerCase()));
+  const match = voices.find(voice => voice.lang.toLowerCase().startsWith(state.language) &&
+    (voice.name.toLowerCase().includes(query.toLowerCase()) || voice.lang.toLowerCase().includes(query.toLowerCase())));
   if (!match) {
     speech.speak(`I could not find an installed voice matching ${query}. You can choose an available voice in Me settings.`);
     return false;
@@ -818,7 +854,27 @@ async function handleCommand(command) {
   if (!text) return;
   logActivity("assistant_command", { characterCount: text.length }, "requested");
   addMessage(text, document.querySelector("#conversation"), true);
-  const destinationMatch = text.match(/\b(?:take me to|help me (?:get|reach)(?: to)?|navigate to|directions to|route to|go to|visit|reach)\s+(.+?)(?:\s+from (?:my )?current location)?[.!?]*$/i);
+  const routeConsentMatch = /\b(?:i (?:agree|consent)|share my location|consent to share)\b/i.test(text);
+  const routeDestinationMatch = text.match(/\b(?:estimate(?: distance and time)? to|estimate route to|route(?: estimate)? to|take me to|help me (?:get|reach)(?: to)?|navigate to|directions to|go to|visit|reach)\s+(.+?)(?:\s+from (?:my )?current location)?[.!?]*$/i);
+  if (routeConsentMatch) {
+    const destination = routeDestinationMatch?.[1]?.replace(/[.!?]+$/u, "").trim() ||
+      (state.page === "go" ? document.querySelector("#route-destination")?.value.trim() : "");
+    if (!destination) {
+      setPage("go", false);
+      const response = "Please tell me the destination you want estimated. I will request your location only after you agree to share it.";
+      addMessage(response);
+      speech.speak(response);
+      return;
+    }
+    setPage("go", false);
+    const form = document.querySelector("#route-form");
+    document.querySelector("#route-destination").value = destination;
+    document.querySelector("#route-consent").checked = true;
+    addMessage(`You agreed to share your location and destination for an estimate to ${destination}.`);
+    await estimateWalkingRoute(form);
+    return;
+  }
+  const destinationMatch = text.match(/\b(?:estimate(?: route)? to|take me to|help me (?:get|reach)(?: to)?|navigate to|directions to|route to|go to|visit|reach)\s+(.+?)(?:\s+from (?:my )?current location)?[.!?]*$/i);
   if (destinationMatch?.[1]?.trim()) {
     const destination = destinationMatch[1].replace(/[.!?]+$/u, "").trim();
     setPage("go", false);
@@ -1133,9 +1189,11 @@ async function executeGeminiIntent(rawText) {
       if (!APP_CONFIG.languages[language]) return say("I can speak English, Hindi, Tamil, Telugu, Kannada, Malayalam, or Punjabi. Open Profile to change languages.");
       state.language = language;
       speech.setLanguage(language);
+      speech.setEngine(language === "en" ? "device" : "gemini");
       localStorage.setItem("visionmate.language", language);
-      persistSettings({ language });
-      return say(`Spoken language set to ${APP_CONFIG.languages[language].name}.`);
+      localStorage.setItem("visionmate.speechEngine", speech.engine);
+      persistSettings({ language, speechEngine: speech.engine });
+      return say(languageConfirmation(language));
     }
     case "set_focus": {
       const focus = (intent.value || "").toLowerCase();
@@ -1281,6 +1339,36 @@ function initializeMap(attempt = 0) {
   window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
   }).addTo(state.map);
+}
+
+function initializeRouteMap(route, attempt = 0) {
+  const element = document.querySelector("#route-map");
+  if (!element) return;
+  if (!window.L) {
+    if (attempt < 30) setTimeout(() => initializeRouteMap(route, attempt + 1), 150);
+    else {
+      const result = document.querySelector("#route-result");
+      if (result) result.textContent += " The map library did not load, so the route line cannot be shown.";
+      speech.speak("The route estimate is ready, but the map library did not load.");
+    }
+    return;
+  }
+  if (state.routeMap) {
+    state.routeMap.remove();
+    state.routeMap = null;
+  }
+  state.routeMap = window.L.map(element, { zoomControl: true });
+  window.L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  }).addTo(state.routeMap);
+  const line = window.L.polyline(route.geometry, { color: "#c2410c", weight: 6, opacity: 0.85 }).addTo(state.routeMap);
+  window.L.marker(route.origin).addTo(state.routeMap).bindPopup("Your location");
+  window.L.marker(route.destination).addTo(state.routeMap).bindPopup(escapeHtml(route.destinationName));
+  requestAnimationFrame(() => {
+    state.routeMap?.invalidateSize();
+    state.routeMap?.fitBounds(line.getBounds(), { padding: [24, 24], maxZoom: 16 });
+  });
 }
 
 function beginLocationTracking() {
@@ -2296,9 +2384,14 @@ document.addEventListener("change", event => {
   } else if (event.target.id === "settings-language") {
     state.language = event.target.value;
     speech.setLanguage(state.language);
+    speech.setEngine(state.language === "en" ? "device" : "gemini");
+    localStorage.setItem("visionmate.speechEngine", speech.engine);
     localStorage.setItem("visionmate.language", state.language);
-    persistSettings({ language: state.language });
-    speech.speak(`Spoken language set to ${APP_CONFIG.languages[state.language].name}.`);
+    persistSettings({ language: state.language, speechEngine: speech.engine });
+    const engineSelect = document.querySelector("#speech-engine");
+    if (engineSelect) engineSelect.value = speech.engine;
+    loadSpeechVoices();
+    speech.speak(languageConfirmation(state.language));
     setPage("me", false);
   } else if (event.target.id === "source-language") {
     if (document.querySelector("#translation-output")) document.querySelector("#translation-output").textContent = "";
@@ -2320,6 +2413,13 @@ document.addEventListener("change", event => {
     localStorage.setItem("visionmate.voice", speech.voiceName);
     persistSettings({ speechVoice: speech.voiceName });
     speech.speak("Speech voice updated.");
+  } else if (event.target.id === "speech-engine") {
+    speech.setEngine(event.target.value);
+    localStorage.setItem("visionmate.speechEngine", speech.engine);
+    persistSettings({ speechEngine: speech.engine });
+    speech.speak(speech.engine === "gemini"
+      ? "Gemini voice is on. Spoken responses are translated into your selected language and require an internet connection."
+      : "Device voice is on. Speech is faster and may work offline if a matching voice is installed.");
   } else if (event.target.id === "app-theme") {
     updateAppearance(event.target.value);
     persistSettings({ theme: event.target.value });
@@ -2353,6 +2453,7 @@ window.addEventListener("beforeunload", () => {
 });
 window.addEventListener("online", updateConnectionStatus);
 window.addEventListener("offline", updateConnectionStatus);
+window.addEventListener("visionmate:speech-error", event => toast(event.detail?.message || "Spoken feedback could not be generated."));
 window.speechSynthesis?.addEventListener("voiceschanged", loadSpeechVoices);
 updateAppearance(localStorage.getItem("visionmate.theme") || "light");
 const initialPage = new URLSearchParams(location.search).get("emergency") === "1"

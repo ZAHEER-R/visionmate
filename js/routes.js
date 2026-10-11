@@ -1,6 +1,45 @@
 const GEOCODER_URL = "https://photon.komoot.io/api/";
 const ROUTER_URL = "https://valhalla1.openstreetmap.de/route";
 
+function decodePolyline(encoded, precision = 6) {
+  if (typeof encoded !== "string" || !encoded) {
+    throw new Error("The routing service did not return a map route.");
+  }
+  const factor = 10 ** precision;
+  const coordinates = [];
+  let index = 0;
+  let latitude = 0;
+  let longitude = 0;
+
+  while (index < encoded.length) {
+    const deltas = [];
+    for (let coordinate = 0; coordinate < 2; coordinate += 1) {
+      let result = 0;
+      let shift = 0;
+      let byte;
+      do {
+        if (index >= encoded.length) throw new Error("The routing service returned an invalid map route.");
+        byte = encoded.charCodeAt(index++) - 63;
+        if (byte < 0 || byte > 63 || shift > 30) {
+          throw new Error("The routing service returned an invalid map route.");
+        }
+        result |= (byte & 0x1f) << shift;
+        shift += 5;
+      } while (byte >= 0x20);
+      deltas.push(result & 1 ? ~(result >> 1) : result >> 1);
+    }
+    latitude += deltas[0];
+    longitude += deltas[1];
+    const point = [latitude / factor, longitude / factor];
+    if (!Number.isFinite(point[0]) || !Number.isFinite(point[1])) {
+      throw new Error("The routing service returned an invalid map route.");
+    }
+    coordinates.push(point);
+  }
+  if (coordinates.length < 2) throw new Error("The routing service returned an incomplete map route.");
+  return coordinates;
+}
+
 async function readJson(response, serviceName) {
   let payload;
   try {
@@ -66,12 +105,23 @@ export async function getWalkingRoute({ origin, destination, language = "en" }) 
   if (payload?.trip?.status !== 0 || !Number.isFinite(summary?.length) || !Number.isFinite(summary?.time)) {
     throw new Error(payload?.trip?.status_message || "A pedestrian route could not be calculated for these locations.");
   }
+  const legs = payload?.trip?.legs;
+  if (!Array.isArray(legs) || legs.length === 0 || legs.some(leg => typeof leg.shape !== "string" || !leg.shape)) {
+    throw new Error("The routing service returned an estimate without map geometry. Please try again later.");
+  }
   if (summary.length <= 0 || summary.time <= 0) {
     throw new Error("The routing service returned an invalid distance or duration.");
   }
+  const geometry = legs.flatMap((leg, index) => {
+    const points = decodePolyline(leg.shape);
+    return index === 0 ? points : points.slice(1);
+  });
   return {
     destinationName: place.destinationName,
     distanceKm: summary.length,
-    durationSeconds: summary.time
+    durationSeconds: summary.time,
+    origin: [origin.latitude, origin.longitude],
+    destination: [place.latitude, place.longitude],
+    geometry
   };
 }
