@@ -1,3 +1,5 @@
+const runtimeConfig = globalThis.VISIONMATE_CONFIG || {};
+
 export const APP_CONFIG = {
   appName: "VisionMate",
   defaultLanguage: "en",
@@ -12,14 +14,14 @@ export const APP_CONFIG = {
   },
   batteryWarningPercent: 20,
   firebase: {
-    apiKey: "YOUR_FIREBASE_API_KEY",
-    authDomain: "visionmate-f164a.firebaseapp.com",
-    projectId: "visionmate-f164a",
-    databaseURL: "https://visionmate-f164a-default-rtdb.firebaseio.com",
-    appId: "YOUR_FIREBASE_APP_ID"
+    apiKey: runtimeConfig.firebase?.apiKey || "YOUR_FIREBASE_API_KEY",
+    authDomain: runtimeConfig.firebase?.authDomain || "visionmate-f164a.firebaseapp.com",
+    projectId: runtimeConfig.firebase?.projectId || "visionmate-f164a",
+    databaseURL: runtimeConfig.firebase?.databaseURL || "",
+    appId: runtimeConfig.firebase?.appId || "YOUR_FIREBASE_APP_ID"
   },
   supabase: {
-    url: "https://bwxvnkutnjagqsivuqbz.supabase.co",
-    anonKey: "sb_publishable_01yP4XQ5FTgRUfCqzFMIOA_7_uesXZb"
+    url: runtimeConfig.supabase?.url || "https://bwxvnkutnjagqsivuqbz.supabase.co",
+    anonKey: runtimeConfig.supabase?.anonKey || "sb_publishable_01yP4XQ5FTgRUfCqzFMIOA_7_uesXZb"
   }
 };

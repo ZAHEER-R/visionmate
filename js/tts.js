@@ -1,4 +1,5 @@
 import { runAnuvaadhub } from "./anuvaadhub.js";
+import { speech } from "./speech.js";
 
 export async function speakWithProvider(text, gender = "female", sourceLanguage = "en") {
   const safeText = String(text || "").normalize("NFC").replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/gu, " ").trim();
@@ -8,7 +9,6 @@ export async function speakWithProvider(text, gender = "female", sourceLanguage 
   if (typeof result.audioUrl !== "string" || !result.audioUrl.startsWith("https://")) {
     throw new Error("Anuvaadhub returned an invalid audio link.");
   }
-  const audio = new Audio(result.audioUrl);
-  await audio.play();
+  await speech.playAudio(result.audioUrl);
   return safeText;
 }

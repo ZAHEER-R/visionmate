@@ -1,6 +1,6 @@
 export function animateView(element) {
   if (!window.gsap || !element) return;
-  window.gsap.fromTo(element, { autoAlpha: 0, y: 12 }, { autoAlpha: 1, y: 0, duration: 0.38, ease: "power2.out" });
+  window.gsap.fromTo(element, { y: 12 }, { y: 0, duration: 0.38, ease: "power2.out" });
   const animatedElements = [...element.querySelectorAll("[data-animate]")];
   if (!animatedElements.length) return;
   window.gsap.fromTo(animatedElements, { autoAlpha: 0, y: 10 }, {

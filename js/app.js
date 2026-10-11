@@ -5,31 +5,38 @@ import { CameraController } from "./camera.js";
 import { answerFor } from "./intent.js";
 import { animateView, pressFeedback, setVisionActive } from "./gsap-animations.js";
 import {
-  getSupabaseClient, invokeAssistant, saveOwnedRecord, listOwnedRecords, deleteOwnedRecord, saveProfileRecord,
-  loadLatestConversation, saveChatMessage, saveActivityEvent, loadUserSettings, saveUserSettings
+  invokeAssistant, saveOwnedRecord, listOwnedRecords, deleteOwnedRecord, saveProfileRecord,
+  loadProfileRecord, loadLatestConversation, saveChatMessage, saveActivityEvent, loadUserSettings, saveUserSettings
 } from "./supabase.js";
 import { machineTranslate } from "./mt.js";
-import { recognizeImage } from "./cv.js";
 import { speakWithProvider } from "./tts.js";
 import { recordWav, stopRecording } from "./stt.js";
 import { runAnuvaadhub } from "./anuvaadhub.js";
 import { saveFirebaseProfile } from "./firebase.js";
+import { getWalkingRoute } from "./routes.js";
 
 const root = document.querySelector("#view-root");
 const nav = document.querySelector("#bottom-nav");
 const state = {
   page: "welcome",
+  navigationHistory: [],
   profile: auth.getProfile() || {},
   onboarding: {},
   authMode: null,
   authStep: 0,
   visionActive: false,
+  visionMonitorTimer: null,
+  visionMonitoring: false,
+  assistanceMode: localStorage.getItem("visionmate.assistanceMode") || "describe",
+  privacyMode: localStorage.getItem("visionmate.privacyMode") !== "off",
   camera: null,
+  cameraZoom: Math.max(1, Math.min(4, Number(localStorage.getItem("visionmate.cameraZoom")) || 1)),
   map: null,
   mapMarker: null,
   locationWatchId: null,
   menuPhotoUrl: null,
   pendingCall: null,
+  emergencyLocation: null,
   conversationId: null,
   conversationPromise: null,
   conversationHistoryLoaded: false,
@@ -59,7 +66,8 @@ const icon = (name) => {
   return icons[name] || "";
 };
 
-function setPage(page, announce = true) {
+function setPage(page, announce = true, recordHistory = true) {
+  if (recordHistory && state.page && state.page !== page) state.navigationHistory.push(state.page);
   if (page !== "vision" && state.locationWatchId !== null) {
     navigator.geolocation?.clearWatch(state.locationWatchId);
     state.locationWatchId = null;
@@ -70,21 +78,35 @@ function setPage(page, announce = true) {
     onboarding: renderOnboarding,
     auth: renderAuth,
     home: renderHome,
+    go: renderGo,
     vision: renderVision,
     voice: renderVoice,
     translate: renderTranslate,
     me: renderMe,
-    permissions: renderPermissions
+    permissions: renderPermissions,
+    emergency: renderEmergency
   };
+  if (page !== "vision") stopVisionMonitoring();
+  if (page !== "vision" && state.visionActive) {
+    state.camera?.stop();
+    state.camera = null;
+    state.visionActive = false;
+  }
   (pages[page] || renderHome)();
-  nav.hidden = !auth.getSession();
+  nav.hidden = false;
   nav.querySelectorAll("[data-nav]").forEach(button => {
     if (button.dataset.nav === page) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   });
+  const lensButton = nav.querySelector('[data-action="open-vision-lens"]');
+  if (lensButton) {
+    if (page === "vision") lensButton.setAttribute("aria-current", "page");
+    else lensButton.removeAttribute("aria-current");
+  }
   const target = root.firstElementChild;
   animateView(target);
   document.querySelector("#main-content").focus({ preventScroll: true });
+  window.scrollTo(0, 0);
   if (announce) speech.speak(pageAnnouncement(page));
 }
 
@@ -95,42 +117,39 @@ function selectedGeminiModel() {
 
 function pageAnnouncement(page) {
   const messages = {
-    welcome: "Welcome to VisionMate. Your eyes, your voice, your independence.",
+    welcome: "VisionMate is ready. Camera and microphone start only when you ask.",
     onboarding: "Let’s get to know you. I’ll ask a few short questions.",
     auth: "Choose how you would like to continue.",
     home: `Welcome${state.profile.firstName ? `, ${state.profile.firstName}` : ""}. Home is ready.`,
-    vision: "Vision companion. Camera preview and demo guidance. This prototype cannot detect hazards.",
+    go: "Where would you like to go? Go can show an informational distance and time estimate, not turn-by-turn or safety guidance.",
+    vision: "Vision assist. Optional camera analysis can be wrong and cannot detect hazards or guide movement.",
     voice: "Voice agent. Ask a question or type a command.",
     translate: "Translator. Enter text and choose a language.",
     me: "Profile and settings.",
-    permissions: "Permission setup. You control whether each permission is allowed."
+    permissions: "Permission setup. You control whether each permission is allowed.",
+    emergency: "Emergency support. Phone calls require your confirmation and device support."
   };
   return messages[page] || "";
 }
 
+function firebaseConfigurationReady() {
+  return ["apiKey", "authDomain", "projectId", "appId"].every(key => {
+    const value = APP_CONFIG.firebase[key];
+    return typeof value === "string" && value.length > 0 && !value.startsWith("YOUR_");
+  });
+}
+
 function renderWelcome() {
-  root.innerHTML = `<div class="page">
-    <div class="welcome-grid">
-      <section class="hero-title">
-        <div class="eyebrow">A companion by your side</div>
-        <h1>Your world,<br><span>within reach.</span></h1>
-        <p class="lead">A voice-first companion designed to make everyday moments feel more connected. Start with a warm hello, and we’ll take it one step at a time.</p>
-        <div class="hero-actions">
-          <button class="button button-primary" type="button" data-action="start-onboarding">Meet VisionMate ${icon("arrow")}</button>
-          <button class="button button-secondary" type="button" data-action="login">I already have an account</button>
-        </div>
-        <p class="footer-note">Your eyes, your voice, your independence.<br>Prototype note: this app does not yet detect hazards or provide reliable navigation.</p>
-      </section>
-      <aside class="hero-art" aria-label="VisionMate voice companion visual">
-        <div class="hero-orb">${icon("eye")}</div>
-        <div class="orb-caption"><span>A familiar voice, whenever you need one</span><span>MADE TO BE BESIDE YOU</span></div>
-      </aside>
-    </div>
-    <div class="card-grid">
-      <article class="feature-card" data-animate><div class="feature-icon">${icon("eye")}</div><h3>See more together</h3><p>A camera preview and spoken companion tools, built with accessibility in mind.</p></article>
-      <article class="feature-card" data-animate><div class="feature-icon">${icon("mic")}</div><h3>Just say what you need</h3><p>Talk or type to explore the voice agent and phone-control demo.</p></article>
-      <article class="feature-card" data-animate><div class="feature-icon">${icon("shield")}</div><h3>Your choices come first</h3><p>You stay in control of your profile, language, and device permissions.</p></article>
-    </div>
+  root.innerHTML = `<div class="page app-page">
+    <section class="app-greeting"><div><div class="eyebrow">VISIONMATE · ASSIST</div><h1>What do you need?</h1><p>Use VisionMate as a guest or sign in to sync your account.</p></div><span class="app-language">${APP_CONFIG.languages[state.language].name}</span></section>
+    <section class="app-action-grid" aria-label="VisionMate tools">
+      <button class="app-action-card app-action-primary" type="button" data-action="open-vision-lens"><span>${icon("eye")}</span><strong>Open Vision Lens</strong><small>Start camera with your permission</small></button>
+      <button class="app-action-card" type="button" data-action="start-guest"><span>${icon("arrow")}</span><strong>Continue as guest</strong><small>Use features with local-only data</small></button>
+      <button class="app-action-card" type="button" data-action="emergency"><span>!</span><strong>Emergency help</strong><small>Call or share location</small></button>
+      <button class="app-action-card" type="button" data-action="login"><span>${icon("shield")}</span><strong>Sign in</strong><small>Optional cloud sync</small></button>
+    </section>
+    <section class="offline-card"><span class="status-dot"></span><div><strong id="offline-status">Checking connection…</strong><p>Emergency contacts and on-device speech may still work offline. Visual AI needs internet.</p></div></section>
+    <p class="safety-note">Camera and microphone start only when you ask. VisionMate cannot confirm that walking routes are safe; keep using your mobility aid.</p>
   </div>`;
 }
 
@@ -162,7 +181,7 @@ function renderOnboarding() {
 function renderAuth() {
   const mode = state.authMode;
   if (!mode) {
-    const firebaseReady = APP_CONFIG.firebase.apiKey && !APP_CONFIG.firebase.apiKey.startsWith("YOUR_");
+    const firebaseReady = firebaseConfigurationReady();
     root.innerHTML = `<div class="page"><div class="auth-wrap"><section class="panel">
       <div class="eyebrow">Your account, your way</div><h2>How would you like to continue?</h2>
       <p class="lead">Your profile is saved on this device. Sign in to connect an account, or continue with Google.</p>
@@ -173,8 +192,8 @@ function renderAuth() {
         <button class="button button-secondary" type="button" data-action="auth-mode" data-mode="login">Log in with email</button>
         <button class="button button-secondary" type="button" data-action="auth-mode" data-mode="reset">Forgot password</button>
       </div>
+      <div class="form-actions"><button class="button button-primary" type="button" data-action="start-guest">Skip sign-in · continue as guest</button></div>
       <p class="footer-note">${firebaseReady ? "Google and email sign-in use Firebase Authentication." : "Account actions are disabled until Firebase is configured; VisionMate will not create a fake login session."}</p>
-      <a class="mini-link" href="./README.md" target="_blank" rel="noopener">View setup instructions</a>
       <div class="form-actions"><button class="button button-secondary" type="button" data-action="back-welcome">Back to welcome</button></div>
     </section></div></div>`;
     return;
@@ -193,25 +212,31 @@ function renderAuth() {
 
 function renderHome() {
   const firstName = escapeHtml(state.profile.firstName || "friend");
-  root.innerHTML = `<div class="page">
-    <div class="section-head"><div><div class="eyebrow">Your companion is here</div><h1>Good to have you,<br><span class="mint">${firstName}.</span></h1><p class="lead">What would you like to do together?</p></div></div>
-    <div class="card-grid">
-      <button class="feature-card button-large" type="button" data-nav="vision"><div class="feature-icon">${icon("eye")}</div><h3>Vision companion</h3><p>Open camera preview and companion demo.</p></button>
-      <button class="feature-card button-large" type="button" data-nav="voice"><div class="feature-icon">${icon("mic")}</div><h3>Voice agent</h3><p>Speak or type a request to VisionMate.</p></button>
-      <button class="feature-card button-large" type="button" data-nav="translate"><div class="feature-icon">${icon("language")}</div><h3>Translator</h3><p>Translate text and hear it spoken.</p></button>
-      <button class="feature-card button-large" type="button" data-nav="me"><div class="feature-icon">${icon("shield")}</div><h3>Profile & settings</h3><p>Manage your details, language, and permissions.</p></button>
-    </div>
-    <div class="status-banner" style="margin-top:20px">${icon("shield")}<div><strong>Prototype safety note</strong><p>This version does not detect obstacles, read camera text, or give navigation instructions. Never rely on it as a mobility aid.</p></div></div>
+  const activity = readLocalActivity();
+  const chatHistory = readLocalChatHistory();
+  root.innerHTML = `<div class="page app-page">
+    <section class="app-greeting"><div><div class="eyebrow">YOUR ASSISTANT</div><h1>Hello, ${firstName}</h1><p>What would you like help with?</p></div><button class="app-profile-button" type="button" data-nav="me" aria-label="Open profile and settings">${icon("shield")}</button></section>
+    <button class="quick-ask-card" type="button" data-action="open-vision-lens"><span>${icon("eye")}</span><div><strong>Open Vision Lens</strong><small>Start the camera and ask it to read a menu, label, or document</small></div><b>›</b></button>
+    <div class="app-section-title"><h2>Your tools</h2><span>Tap to start</span></div>
+    <section class="app-action-grid" aria-label="Assistive features">
+      <button class="app-action-card app-action-primary" type="button" data-action="open-vision-lens"><span>${icon("eye")}</span><strong>Vision Lens</strong><small>Open the camera and read a menu or document</small></button>
+      <button class="app-action-card" type="button" data-nav="voice"><span>${icon("mic")}</span><strong>Ask anything</strong><small>Voice, notes, reminders</small></button>
+      <button class="app-action-card" type="button" data-nav="translate"><span>${icon("language")}</span><strong>Translate</strong><small>Speak in your language</small></button>
+      <button class="app-action-card app-action-emergency" type="button" data-action="emergency"><span>!</span><strong>Emergency</strong><small>Call trusted contact</small></button>
+    </section>
+    <section class="insights-panel panel" aria-label="Your local usage insights">
+      <div class="app-section-title"><h2>Insights</h2><span>On this device</span></div>
+      <div class="insights-grid">
+        <div><strong>${activity.filter(item => item.type === "vision_analysis").length}</strong><span>Image reads</span></div>
+        <div><strong>${getLocalItems("notes").length}</strong><span>Saved notes</span></div>
+        <div><strong>${chatHistory.length}</strong><span>Chat messages</span></div>
+      </div>
+    </section>
+    <section class="offline-card"><span class="status-dot"></span><div><strong id="offline-status">Checking connection…</strong><p>Local emergency tools can open offline. Visual AI and cloud sync need internet.</p></div>    </section>
+    <p class="safety-note"><strong>For awareness only.</strong> VisionMate cannot guide walking, detect hazards reliably, or confirm a crossing is safe. Keep using your mobility aid.</p>
   </div>`;
-  if (!state.permissionChecked) {
-    state.permissionChecked = true;
-    setTimeout(() => {
-      if (state.page === "home") {
-        setPage("permissions", false);
-        speech.speak("Before we continue, I’d like to explain a few optional permissions. You can allow or skip each one.");
-      }
-    }, 700);
-  }
+  updateConnectionStatus();
+  state.permissionChecked = true;
 }
 
 function renderPermissions() {
@@ -232,41 +257,80 @@ function renderPermissions() {
 
 function renderVision() {
   root.innerHTML = `<div class="page">
-    <div class="section-head"><div class="page-intro"><div class="eyebrow">Vision companion</div><h2>Let’s look together.</h2><p class="lead">A camera preview, with an honest voice about what this prototype can and cannot do.</p></div></div>
+    <div class="section-head"><div class="page-intro"><div class="eyebrow">VISION ASSIST</div><h2>What should I help with?</h2><p class="lead">Choose a focus, then start the camera when you are ready.</p></div></div>
     <div class="companion-layout">
       <section id="vision-preview" class="vision-preview ${state.visionActive ? "active" : ""}" aria-label="Camera preview panel">
         <video id="camera-video" class="camera-video ${state.visionActive ? "" : "hidden"}" autoplay muted playsinline aria-label="Live camera preview"></video>
         <div class="camera-visual ${state.visionActive ? "hidden" : ""}" aria-hidden="true"><div class="camera-frame"></div><div class="camera-eye">${icon("eye")}</div></div>
-        <img id="menu-photo" class="menu-photo hidden" alt="Camera frame captured for menu reading">
-        <div class="preview-top"><span class="live-label"><span class="status-dot"></span><span id="vision-status">${state.visionActive ? "PREVIEW ACTIVE" : "READY WHEN YOU ARE"}</span></span><span class="confidence">AI descriptions can be wrong</span></div>
-        <div class="preview-bottom"><div class="preview-caption"><strong id="vision-caption">I’m here with you.</strong><span id="vision-detail">Start the camera preview when you’re safely stationary. I cannot identify hazards.</span></div></div>
+        <img id="menu-photo" class="menu-photo hidden" alt="Camera image captured for analysis">
+        <div class="preview-top"><span class="live-label"><span class="status-dot"></span><span id="vision-status">${getCameraStatusLabel()}</span></span><span class="confidence">AI · unverified</span></div>
+        <div class="preview-bottom"><div class="preview-caption"><strong id="vision-caption">Your camera is off</strong><span id="vision-detail">Start a preview when safely stationary. Nothing is analyzed until you request it.</span></div></div>
       </section>
       <aside class="companion-controls">
-        <div class="safety-note"><strong>Walking guidance is not available.</strong> VisionMate can describe a single requested image, but it is not continuous video analysis or validated hazard detection. Do not use it while walking or crossing roads; use your cane, guide dog, or trusted assistance.</div>
+        <div class="field"><label for="assistance-mode">Personal assistance focus</label><select id="assistance-mode">
+          <option value="describe" ${state.assistanceMode === "describe" ? "selected" : ""}>Describe this scene</option>
+          <option value="reading" ${state.assistanceMode === "reading" ? "selected" : ""}>Read text & documents</option>
+          <option value="shopping" ${state.assistanceMode === "shopping" ? "selected" : ""}>Shopping & product details</option>
+          <option value="indoor" ${state.assistanceMode === "indoor" ? "selected" : ""}>Indoor signs & landmarks</option>
+          <option value="directional" ${state.assistanceMode === "directional" ? "selected" : ""}>Describe left / center / right in image</option>
+        </select></div>
         <button id="camera-toggle" class="button button-primary button-large" type="button" data-action="toggle-camera">${icon("eye")} ${state.visionActive ? "Stop camera preview" : "Start camera preview"}</button>
-        <button class="button button-secondary button-large" type="button" data-action="read-demo">Read a menu or sign</button>
-        <button class="button button-secondary" type="button" data-action="capture-menu">Capture and describe this view</button>
-        <button class="button button-secondary" type="button" data-action="capture-scene">Describe one camera image</button>
-        <div class="control-row"><button class="button button-secondary" type="button" data-action="ask-clear">Ask for walking guidance</button><button class="button button-secondary" type="button" data-action="sos">SOS · share location</button></div>
-        <form id="vision-command" class="voice-command"><input id="vision-text" aria-label="Ask VisionMate" placeholder="Ask me anything…" autocomplete="off"><button class="button button-primary" type="submit" aria-label="Send question">${icon("arrow")}</button></form>
+        <div class="camera-controls" aria-label="Camera controls">
+          <div class="field camera-zoom-control"><label for="camera-zoom">Camera zoom <output id="camera-zoom-value" for="camera-zoom">${state.cameraZoom.toFixed(1)}x</output></label><input id="camera-zoom" type="range" min="1" max="4" step="0.5" value="${state.cameraZoom}" aria-describedby="camera-zoom-help" ${state.visionActive ? "" : "disabled"}><small id="camera-zoom-help">Uses camera zoom when available; otherwise enlarges and crops the preview.</small></div>
+          <div class="vision-tools"><button class="button button-secondary" type="button" data-action="switch-camera" ${state.visionActive ? "" : "disabled"}>Switch front / rear camera</button><button class="button button-secondary" type="button" data-action="fullscreen-camera" ${state.visionActive ? "" : "disabled"}>Fullscreen preview</button></div>
+        </div>
+        <div class="vision-tools">
+          <button class="button button-secondary" type="button" data-action="capture-focus">Run my focus</button>
+          <button class="button button-secondary" type="button" data-action="capture-document">Capture & read text</button>
+        </div>
+        <form id="vision-command" class="voice-command"><input id="vision-text" aria-label="Ask a question about the camera view" placeholder="Ask about this view…" autocomplete="off"><button class="button button-primary" type="submit" aria-label="Ask VisionMate">${icon("arrow")}</button></form>
+        <div class="vision-tools"><button class="button button-secondary" type="button" data-action="listen-vision">${icon("mic")} Ask by voice</button><button class="button button-secondary" type="button" data-action="object-search">Find an object</button></div>
+        <div class="monitor-card"><div><strong>Periodic scene updates</strong><small>One image every 30 seconds · keep app open · stop anytime</small></div><button class="button button-secondary" type="button" data-action="monitor-toggle">${state.visionMonitoring ? "Stop updates" : "Start updates"}</button></div>
+        <label class="privacy-control"><input id="privacy-mode" type="checkbox" ${state.privacyMode ? "checked" : ""}><span><strong>People privacy mode</strong><small>Ask AI not to describe or identify people. Does not blur or mask the image.</small></span></label>
+        <div class="safety-note"><strong>Not navigation or hazard detection.</strong> Left/right refers only to position inside this single camera image. Do not use VisionMate while walking or crossing. Indoor signs can be described; this app cannot guide you to a room.</div>
+        <p class="footer-note">When you request AI analysis, one still image is sent to the configured provider. Review that provider’s data policy and avoid capturing people or sensitive documents without consent.</p>
+        <button class="button button-danger" type="button" data-action="emergency">Emergency support</button>
       </aside>
     </div>
-    <section class="panel map-panel"><div class="map-heading"><div><div class="eyebrow">Location</div><h3>My map</h3><p class="muted">Location tracking starts only when you request it. It is not turn-by-turn navigation.</p></div><button class="button button-secondary" type="button" data-action="track-location">Start location tracking</button></div><div id="location-map" role="region" aria-label="Map showing your current location"></div><p id="location-status" class="footer-note" aria-live="polite">Location is off.</p></section>
+    <section class="panel map-panel"><div class="map-heading"><div><div class="eyebrow">LOCATION ONLY</div><h3>My position</h3><p class="muted">Location tracking starts only when requested. This is not indoor or turn-by-turn navigation.</p></div><button class="button button-secondary" type="button" data-action="track-location">Show location</button></div><div id="location-map" role="region" aria-label="Map showing your current location"></div><p id="location-status" class="footer-note" aria-live="polite">Location is off.</p></section>
   </div>`;
   setVisionActive(state.visionActive);
   initializeMap();
+}
+
+function getCameraStatusLabel() {
+  const track = state.camera?.stream?.getVideoTracks?.()[0];
+  if (!state.visionActive || track?.readyState !== "live") return "CAMERA OFF";
+  return `${state.camera.facingMode === "user" ? "FRONT" : "REAR"} CAMERA ON`;
+}
+
+function renderEmergency() {
+  const offlineMode = localStorage.getItem("visionmate.emergencyMode") === "on";
+  const trustedPhone = localStorage.getItem(emergencyContactKey()) || "";
+  root.innerHTML = `<div class="page emergency-page">
+    <div class="page-intro"><div class="eyebrow">EMERGENCY SUPPORT</div><h2>Get help from someone you trust.</h2><p class="lead">Use these tools only as you choose. The app does not automatically contact emergency services.</p></div>
+    <section class="offline-card emergency-status"><span class="status-dot"></span><div><strong id="emergency-connection">${navigator.onLine ? "Online" : "Offline"} · emergency screen available</strong><p>Calls use your phone connection. Text messages may need cellular service. Location may be unavailable indoors.</p></div></section>
+    <section class="panel emergency-contact-panel"><h3>Trusted contact</h3><form id="emergency-contact-form" class="form-stack">
+      <div class="field"><label for="emergency-phone">Phone number</label><input id="emergency-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel" value="${escapeHtml(trustedPhone)}" placeholder="+1 555 000 0000" required></div>
+      <button class="button button-secondary" type="submit">Save on this device</button>
+    </form>
+    <div class="emergency-actions"><button class="button button-danger" type="button" data-action="emergency-call" ${trustedPhone ? "" : "disabled"}>Call trusted contact</button><button class="button button-secondary" type="button" data-action="emergency-location">Get my location</button><button class="button button-secondary" type="button" data-action="emergency-sms" ${trustedPhone ? "" : "disabled"}>Prepare location text</button></div>
+    <p id="emergency-location-output" class="translation-output" aria-live="polite">Location has not been requested.</p></section>
+    <section class="panel offline-mode-panel"><label class="setting-row"><span><strong>Offline emergency screen</strong><span>Keep this help screen available when network is lost.</span></span><input id="offline-emergency-mode" class="switch" type="checkbox" ${offlineMode ? "checked" : ""}></label><p class="safety-note">Offline mode does not provide AI vision, automatic hazard alerts, or guaranteed emergency messaging. Keep local emergency numbers and contacts available.</p></section>
+    <button class="button button-secondary" type="button" data-action="emergency-back">Back to VisionMate</button>
+  </div>`;
 }
 
 function renderVoice() {
   state.conversationId = null;
   state.conversationPromise = null;
   state.conversationHistoryLoaded = false;
-  root.innerHTML = `<div class="page"><div class="page-intro"><div class="eyebrow">Voice agent</div><h2>Tell me what’s on your mind.</h2><p class="lead">Talk or type. VisionMate can save notes, set best-effort reminders, open supported websites, and ask before opening your phone dialer.</p></div>
+  root.innerHTML = `<div class="page"><div class="page-intro"><div class="eyebrow">Voice agent</div><h2>Tell me what’s on your mind.</h2><p class="lead">Press and hold Talk or use browser voice input. Say “open Vision Lens” or “read this menu” to start the camera and ask Gemini to read one still image.</p></div>
     <section class="panel" style="padding:22px">
       <div id="conversation" class="conversation" aria-label="Conversation with VisionMate"><div class="message" data-welcome-message>Hi${state.profile.firstName ? ` ${escapeHtml(state.profile.firstName)}` : ""}. I can save notes and reminders, open supported websites, and start a phone call after your confirmation. I cannot close apps or control phone-wide settings.</div></div>
       <p id="voice-caption" class="voice-caption" aria-live="polite">Your live speech transcript will appear here.</p>
-      <form id="voice-command" class="voice-command" style="margin-top:15px"><input id="voice-text" aria-label="Type a message for VisionMate" placeholder="Try “open WhatsApp” or ask a question…" autocomplete="off"><button class="button button-primary" type="submit" aria-label="Send message">${icon("arrow")}</button></form>
-      <div class="form-actions"><button class="button button-secondary" type="button" data-action="listen-voice">${icon("mic")} Browser voice input</button><button id="anuvaadhub-record" class="button button-secondary" type="button" data-action="record-anuvaadhub">Record WAV · Anuvaadhub ASR</button><button class="button button-secondary" type="button" data-action="sos">SOS · share location</button></div>
+      <form id="voice-command" class="voice-command" style="margin-top:15px"><input id="voice-text" aria-label="Type a message for VisionMate" placeholder="Try “open Vision Lens” or “read this menu”…" autocomplete="off"><button class="button button-primary" type="submit" aria-label="Send message">${icon("arrow")}</button></form>
+      <div class="form-actions"><button id="push-to-talk" class="button button-primary push-to-talk" type="button" aria-label="Press and hold to speak">${icon("mic")} Press and hold to talk</button><button class="button button-secondary" type="button" data-action="listen-voice">${icon("mic")} Browser voice input</button><button id="anuvaadhub-record" class="button button-secondary" type="button" data-action="record-anuvaadhub">Record WAV · Anuvaadhub ASR</button><button class="button button-secondary" type="button" data-action="sos">SOS · share location</button></div>
     </section>
     <div class="section-head extra-section-heading"><div><div class="eyebrow">Your tools</div><h2>Notes, apps & contacts</h2><p class="lead">Save notes here, open supported web apps, or call a contact with your confirmation.</p></div></div>
     <div class="assistant-tools">
@@ -286,20 +350,95 @@ function renderVoice() {
         <form id="contact-form" class="form-stack"><div class="field"><label for="contact-name">Contact name</label><input id="contact-name" name="name" required></div><div class="field"><label for="contact-phone">Phone number</label><input id="contact-phone" name="phone" type="tel" autocomplete="tel" required></div><button class="button button-primary" type="submit">Save contact</button></form>
         <div id="contacts-list" class="saved-list"></div>
       </section>
-      <section class="panel tool-card"><h3>Anuvaadhub text to speech</h3><p class="muted">Provider limit: 30 words; letters, numbers, and spaces only. Choose a provider voice.</p>
-        <form id="tts-form" class="form-stack"><div class="field"><label for="tts-input">Text to speak</label><textarea id="tts-input" name="text" maxlength="300" required placeholder="Enter a short phrase"></textarea></div><div class="field"><label for="tts-gender">Provider voice</label><select id="tts-gender" name="gender"><option value="female">Female</option><option value="male">Male</option></select></div><button class="button button-primary" type="submit">Speak with Anuvaadhub</button></form>
+      <section class="panel tool-card"><h3>Anuvaadhub text to speech</h3><p class="muted">Provider limit: 30 words; letters, numbers, and spaces only. Select one of the seven supported languages.</p>
+        <form id="tts-form" class="form-stack"><div class="field"><label for="tts-input">Text to speak</label><textarea id="tts-input" name="text" maxlength="300" required placeholder="Enter a short phrase"></textarea></div><div class="field"><label for="tts-language">Speech language</label><select id="tts-language" name="language">${languageOptions(state.language)}</select></div><div class="field"><label for="tts-gender">Provider voice</label><select id="tts-gender" name="gender"><option value="female">Female</option><option value="male">Male</option></select></div><button class="button button-primary" type="submit">Speak with Anuvaadhub</button></form>
       </section>
     </div>
-    <p class="footer-note">Confidence is the confidence of the demo’s intent match, not a guarantee that its answer is correct. Phone actions require your confirmation and device support.</p></div>`;
+    <p class="footer-note">Visual and spoken AI may be wrong. Phone actions require your confirmation and device support; this website cannot control phone-wide settings or other apps.</p></div>`;
   renderSavedItems();
-    getLocalItems("reminders").forEach(scheduleReminder);
-    loadCloudItems();
-    restoreConversation();
+  getLocalItems("reminders").forEach(scheduleReminder);
+  loadCloudItems();
+  restoreConversation();
+  bindPushToTalk();
+}
+
+function bindPushToTalk() {
+  const button = document.querySelector("#push-to-talk");
+  if (!button) return;
+  let listening = false;
+  const start = event => {
+    if (listening || (event.type === "keydown" && event.repeat)) return;
+    listening = true;
+    event.preventDefault();
+    button.classList.add("is-listening");
+    button.textContent = "Listening · release to send";
+    const caption = document.querySelector("#voice-caption");
+    speech.listen({
+      onResult: text => {
+        if (caption) caption.textContent = `You said: ${text}`;
+        handleCommand(text).catch(error => {
+          console.error("Press-and-hold voice command failed:", error);
+          speech.speak(`I could not complete that request. ${error.message}`);
+          toast(error.message);
+        });
+      },
+      onTranscript: text => { if (caption) caption.textContent = `Listening: ${text}`; },
+      onError: message => { if (caption) caption.textContent = message; speech.speak(message); toast(message); }
+    });
+  };
+  const stop = () => {
+    if (!listening) return;
+    listening = false;
+    button.classList.remove("is-listening");
+    button.textContent = "Press and hold to talk";
+    speech.stopListening();
+  };
+  button.addEventListener("pointerdown", start);
+  button.addEventListener("pointerup", stop);
+  button.addEventListener("pointercancel", stop);
+  button.addEventListener("lostpointercapture", stop);
+  button.addEventListener("keydown", event => {
+    if (event.key === " " || event.key === "Enter") start(event);
+  });
+  button.addEventListener("keyup", event => {
+    if (event.key === " " || event.key === "Enter") stop();
+  });
 }
 
 function getLocalItems(kind) {
-  try { return JSON.parse(localStorage.getItem(`visionmate.${kind}`) || "[]"); }
+  try { return JSON.parse(localStorage.getItem(localItemsKey(kind)) || "[]"); }
   catch (error) { console.error(`Could not read ${kind}:`, error); return []; }
+}
+
+function localItemsKey(kind) {
+  const userId = auth.getUserId() || (auth.isGuest() ? "guest" : null);
+  return userId ? `visionmate.${userId}.${kind}` : `visionmate.${kind}`;
+}
+
+function readLocalChatHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(localChatHistoryKey()) || "[]");
+  } catch (error) {
+    console.error("Could not read local chat history:", error);
+    return [];
+  }
+}
+
+function readLocalActivity() {
+  try {
+    return JSON.parse(localStorage.getItem(localActivityKey()) || "[]");
+  } catch (error) {
+    console.error("Could not read local insights:", error);
+    return [];
+  }
+}
+
+function localChatHistoryKey() {
+  return `visionmate.${auth.getUserId() || (auth.isGuest() ? "guest" : "device")}.chatHistory`;
+}
+
+function localActivityKey() {
+  return `visionmate.${auth.getUserId() || (auth.isGuest() ? "guest" : "device")}.localActivity`;
 }
 
 function renderSavedItems() {
@@ -318,21 +457,24 @@ function renderSavedItems() {
 
 async function saveItem(kind, item) {
   const localItems = getLocalItems(kind);
-  const localRecord = { ...item, id: crypto.randomUUID(), created_at: new Date().toISOString(), _pendingSync: true };
+  const localRecord = {
+    ...item,
+    id: crypto.randomUUID(),
+    created_at: new Date().toISOString(),
+    _pendingSync: Boolean(auth.getUserId())
+  };
   localItems.unshift(localRecord);
-  localStorage.setItem(`visionmate.${kind}`, JSON.stringify(localItems));
+  localStorage.setItem(localItemsKey(kind), JSON.stringify(localItems));
   const table = { notes: "notes", contacts: "contacts", reminders: "reminders" }[kind];
-  if (table) {
-    let client = null;
+  if (table && auth.getUserId()) {
     try {
-      client = await getSupabaseClient();
-      if (client) {
-        const record = await saveOwnedRecord(table, item);
+      const record = await saveOwnedRecord(table, item);
+      if (record) {
         localItems[0] = { ...record, _pendingSync: false };
-        localStorage.setItem(`visionmate.${kind}`, JSON.stringify(localItems));
+        localStorage.setItem(localItemsKey(kind), JSON.stringify(localItems));
       }
     } catch (error) {
-      logActivity("permission_denied", { permission: type }, "failed");
+      logActivity("cloud_sync_failed", { kind }, "failed");
       console.error(`Supabase ${kind} sync failed:`, error);
       const feedback = `${kind} saved on this device, but cloud sync failed: ${error.message}`;
       speech.speak(feedback);
@@ -374,55 +516,117 @@ function renderTranslate() {
     </div></div>`;
 }
 
+function renderGo() {
+  root.innerHTML = `<div class="page">
+    <div class="page-intro"><div class="eyebrow">GO · ROUTE ESTIMATE</div><h2>Where would you like to go?</h2><p class="lead">Get an approximate pedestrian-route distance and time from your current location.</p></div>
+    <section class="panel route-panel">
+      <form id="route-form" class="route-form">
+        <div class="field"><label for="route-destination">Destination</label><input id="route-destination" name="destination" type="text" maxlength="120" autocomplete="street-address" placeholder="For example, Charminar, Hyderabad" required></div>
+        <label class="route-consent"><input id="route-consent" name="routeConsent" type="checkbox" required><span>I agree to share my current location and destination with Photon place search and Valhalla routing (public OpenStreetMap-based services) for this estimate. VisionMate does not store them.</span></label>
+        <button class="button button-primary" type="submit">Estimate distance and time</button>
+      </form>
+      <p id="route-result" class="route-result" role="status" aria-live="polite">No route estimate requested.</p>
+      <div class="safety-note"><strong>Informational only.</strong> Distance and time are estimates, not turn-by-turn directions. The route may omit sidewalks, accessible crossings, closures, or hazards. Do not rely on it for safe travel; use a validated navigation aid and your mobility aid or trusted assistance.</div>
+    </section>
+  </div>`;
+}
+
 function renderMe() {
   const profile = state.profile;
-  const firebaseReady = APP_CONFIG.firebase.apiKey && !APP_CONFIG.firebase.apiKey.startsWith("YOUR_");
-  root.innerHTML = `<div class="page"><div class="page-intro"><div class="eyebrow">Your space</div><h2>Profile & settings</h2><p class="lead">Your details are stored on this device unless you connect Firebase.</p></div>
-    <section class="panel" style="padding:24px"><h3>Your profile</h3><form id="profile-form" class="profile-grid">
-      <div class="field"><label for="profile-first">First name</label><input id="profile-first" name="firstName" value="${escapeHtml(profile.firstName || "")}"></div>
-      <div class="field"><label for="profile-last">Last name</label><input id="profile-last" name="lastName" value="${escapeHtml(profile.lastName || "")}"></div>
-      <div class="field"><label for="profile-age">Age</label><input id="profile-age" name="age" type="number" min="1" max="120" value="${escapeHtml(profile.age || "")}"></div>
-      <div class="field"><label for="profile-gender">Gender</label><select id="profile-gender" name="gender"><option value="">Choose</option>${["Woman","Man","Non-binary","Prefer not to say","Self-describe"].map(value => `<option ${profile.gender === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
-      <div class="field"><label for="profile-email">Email</label><input id="profile-email" type="email" name="email" value="${escapeHtml(profile.email || "")}" autocomplete="email"></div>
-      <div class="form-actions"><button type="submit" class="button button-primary">Save profile</button><button type="button" class="button button-secondary" data-action="link-email">Link / verify email</button></div>
-    </form></section>
-    <section style="margin-top:28px"><h3>Preferences</h3><div class="settings-grid">
+  const storageCopy = auth.isGuest()
+    ? "Guest notes, settings, and chat history are stored only in this browser on this device."
+    : "Profile and assistant history sync to your signed-in account. Device permissions and emergency numbers stay on this device.";
+  root.innerHTML = `<div class="page"><div class="page-intro"><div class="eyebrow">Your space</div><h2>Profile & settings</h2><p class="lead">${storageCopy}</p></div>
+    <section id="profile-card" class="panel profile-card">
+      <button class="profile-card-toggle" type="button" data-action="toggle-profile" aria-expanded="false" aria-controls="profile-card-content">
+        <span><strong>Your profile</strong><span id="profile-summary">${escapeHtml([profile.firstName, profile.lastName].filter(Boolean).join(" ") || "Add your name")}${profile.email ? ` · ${escapeHtml(profile.email)}` : ""}</span></span><span class="profile-expand-label">Show details</span>
+      </button>
+      <div id="profile-card-content" class="profile-card-content" aria-hidden="true" inert>
+        <div class="profile-card-actions"><button type="button" class="button button-secondary" data-action="edit-profile">Edit profile</button><button type="button" class="button button-secondary" data-action="close-profile">Close</button></div>
+        <form id="profile-form" class="profile-grid" hidden>
+          <div class="field"><label for="profile-first">First name</label><input id="profile-first" name="firstName" value="${escapeHtml(profile.firstName || "")}"></div>
+          <div class="field"><label for="profile-last">Last name</label><input id="profile-last" name="lastName" value="${escapeHtml(profile.lastName || "")}"></div>
+          <div class="field"><label for="profile-age">Age</label><input id="profile-age" name="age" type="number" min="1" max="120" value="${escapeHtml(profile.age || "")}"></div>
+          <div class="field"><label for="profile-gender">Gender</label><select id="profile-gender" name="gender"><option value="">Choose</option>${["Woman","Man","Non-binary","Prefer not to say","Self-describe"].map(value => `<option ${profile.gender === value ? "selected" : ""}>${value}</option>`).join("")}</select></div>
+          <div class="field"><label for="profile-email">Email</label><input id="profile-email" type="email" name="email" value="${escapeHtml(profile.email || "")}" autocomplete="email"></div>
+          <div class="form-actions"><button type="submit" class="button button-primary">Save profile</button></div>
+        </form>
+      </div>
+    </section>
+    <section class="panel history-panel"><div class="app-section-title"><h2>Recent chat history</h2><span>Saved on this device</span></div><div id="profile-chat-history" class="profile-chat-history"><p class="muted">Loading recent messages…</p></div></section>
+    <section style="margin-top:20px"><h3>Preferences</h3><div class="settings-grid">
       <label class="setting-row"><span><strong>Spoken language</strong><span>Voice prompts and speech</span></span><select id="settings-language">${languageOptions()}</select></label>
       <label class="setting-row"><span><strong>Speech voice</strong><span>Choose an installed device voice</span></span><select id="speech-voice" aria-label="Speech voice"></select></label>
       <label class="setting-row"><span><strong>Speech speed</strong><span>Adjust spoken feedback pace</span></span><input id="speech-rate" type="range" min="0.7" max="1.2" step="0.05" value="${speech.rate}" aria-label="Speech speed"></label>
       <label class="setting-row"><span><strong>Gemini assistant model</strong><span>Fallback tries configured models if rate-limited</span></span><select id="gemini-model" aria-label="Gemini assistant model"><option value="auto">VisionMate Auto (configured fallback)</option><option value="gemini-2.5-flash">Gemini Flash</option><option value="gemini-2.5-flash-lite">Gemini Flash Lite</option></select></label>
-      <label class="setting-row"><span><strong>VisionMate appearance</strong><span>Change this app only, not phone settings</span></span><select id="app-theme" aria-label="VisionMate appearance"><option value="dark">Dark</option><option value="light">Light</option></select></label>
+      <label class="setting-row"><span><strong>VisionMate appearance</strong><span>Change this app only, not phone settings</span></span><select id="app-theme" aria-label="VisionMate appearance"><option value="light">Orange and light</option><option value="dark">Dark</option></select></label>
       <label class="setting-row"><span><strong>Battery alerts</strong><span>Warn when battery is low</span></span><input id="battery-toggle" class="switch" type="checkbox" checked aria-label="Battery alerts"></label>
       <div class="setting-row"><span><strong>Battery level</strong><span id="battery-description">Checking device support…</span></span><div class="battery-level"><div class="battery-icon"><div id="battery-fill" class="battery-fill"></div></div><span id="battery-value">—</span></div></div>
     </div></section>
-    <section class="panel" style="padding:22px;margin-top:22px"><h3>Permissions</h3><p class="muted">Camera, location, microphone, and notifications are optional. Manage them in your browser’s site settings or review the setup checklist.</p><button class="button button-secondary" type="button" data-action="permissions">Review permissions</button></section>
-    <section class="panel integrations-card"><div class="eyebrow">Connections</div><h3>Providers & setup</h3>
-      <div class="integration-status ${firebaseReady ? "" : "integration-pending"}"><span class="status-dot"></span><div><strong>Firebase Authentication</strong><span id="firebase-status">${firebaseReady ? "Firebase web config found. Enable Google and Email/Password providers in Firebase Console." : "Google sign-in and email/password need configuration in js/config.js and Firebase Console."}</span></div></div>
-      <div class="integration-status integration-pending"><span class="status-dot"></span><div><strong>Supabase database</strong><span id="supabase-status">Checking Supabase project settings…</span></div></div>
-      <div class="integration-status integration-pending"><span class="status-dot"></span><div><strong>Gemini vision & assistant</strong><span>Requires deployed gemini-assist Edge Function and server-side GEMINI_API_KEY. Requests can still fail if model quotas are exhausted.</span></div></div>
-      <div class="integration-status integration-pending"><span class="status-dot"></span><div><strong>Bhashini translation</strong><span>Requires deployed bhashini-translate Edge Function, credentials, pipeline, and the selected language pair.</span></div></div>
-      <div class="integration-status integration-pending"><span class="status-dot"></span><div><strong>Phone controls</strong><span>Native Android integration required to open/close arbitrary apps or change device-wide appearance.</span></div></div>
-      <a class="mini-link" href="./README.md" target="_blank" rel="noopener">Read Firebase and API-key setup guide</a>
-    </section>
-    <div class="form-actions"><button class="button button-danger" type="button" data-action="sign-out">Sign out</button></div>
+    <section class="panel" style="padding:22px;margin-top:22px"><h3>Permissions</h3><p class="muted">Camera, location, microphone, and notifications are optional. Manage them in your browser’s site settings or review permissions below.</p><button class="button button-secondary" type="button" data-action="permissions">Review permissions</button></section>
+    <div class="form-actions"><button class="button button-danger" type="button" data-action="sign-out">${auth.isGuest() ? "Exit guest session" : "Sign out"}</button></div>
     <p class="footer-note">Android “display over other apps” is only available after packaging as an APK/TWA. This web prototype cannot access or control other apps.</p>
   </div>`;
   monitorBattery();
   document.querySelector("#battery-toggle").checked = state.batteryAlerts;
   loadSpeechVoices();
-  document.querySelector("#app-theme").value = document.documentElement.dataset.theme || "dark";
+  document.querySelector("#app-theme").value = document.documentElement.dataset.theme || "light";
   document.querySelector("#gemini-model").value = localStorage.getItem("visionmate.model") || "auto";
+  renderProfileChatHistory();
   restoreAccountSettings();
-  getSupabaseClient().then(client => {
-    const status = document.querySelector("#supabase-status");
-    if (status) status.textContent = client
-      ? "Connected for this browser session. Anonymous records belong to this browser until explicitly linked to a user account."
-      : "Not configured. Add the project URL and publishable anon key to js/config.js.";
-  }).catch(error => {
-    console.error("Could not verify Supabase configuration:", error);
-    const status = document.querySelector("#supabase-status");
-    if (status) status.textContent = `Configuration check failed: ${error.message}`;
-  });
+}
+
+async function estimateWalkingRoute(form) {
+  const destination = document.querySelector("#route-destination")?.value.trim();
+  const result = document.querySelector("#route-result");
+  const submit = form.querySelector('button[type="submit"]');
+  if (!destination || !form.reportValidity()) return;
+  if (!navigator.geolocation) throw new Error("Location is not supported by this browser.");
+  result.textContent = "Requesting your location, then looking up one route estimate. Location and destination will be sent to Photon and Valhalla.";
+  submit.disabled = true;
+  speech.speak("Requesting your location for an informational route estimate. Your location and destination will be sent to Photon and Valhalla. This is not safety guidance.");
+  try {
+    const position = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(resolve, reject, {
+      enableHighAccuracy: true,
+      maximumAge: 60000,
+      timeout: 15000
+    }));
+    const route = await getWalkingRoute({
+      origin: { latitude: position.coords.latitude, longitude: position.coords.longitude },
+      destination,
+      language: state.language
+    });
+    const distance = `${route.distanceKm.toFixed(1)} kilometres`;
+    const minutes = Math.max(1, Math.round(route.durationSeconds / 60));
+    const summary = `Approximate walking route to ${route.destinationName}: ${distance}, about ${minutes} minutes. This is not turn-by-turn or safety guidance.`;
+    result.textContent = summary;
+    logActivity("route_estimate_requested", { provider: "openstreetmap" }, "performed");
+    speech.speak(summary);
+  } catch (error) {
+    console.error("Could not estimate a walking route:", error);
+    result.textContent = `Route estimate unavailable: ${error.message}`;
+    speech.speak(`Route estimate unavailable. ${error.message}`);
+  } finally {
+    if (submit.isConnected) submit.disabled = false;
+  }
+}
+
+async function renderProfileChatHistory() {
+  const target = document.querySelector("#profile-chat-history");
+  if (!target) return;
+  try {
+    const history = auth.getUserId()
+      ? (await getConversation())?.messages || []
+      : readLocalChatHistory();
+    target.innerHTML = history.length
+      ? history.slice(-12).map(message =>
+        `<p class="profile-chat-line ${message.role === "user" ? "profile-chat-user" : ""}"><strong>${message.role === "user" ? "You" : "VisionMate"}:</strong> ${escapeHtml(message.content)}</p>`
+      ).join("")
+      : '<p class="muted">Your conversations will appear here.</p>';
+  } catch (error) {
+    console.error("Could not load profile chat history:", error);
+    target.innerHTML = `<p class="muted">Chat history unavailable: ${escapeHtml(error.message)}</p>`;
+  }
 }
 
 function announceResponse(command, target) {
@@ -454,6 +658,9 @@ function addMessage(text, target = document.querySelector("#conversation"), isUs
 }
 
 function getConversation() {
+  if (!auth.getUserId()) {
+    return Promise.resolve({ id: "device", messages: readLocalChatHistory() });
+  }
   if (!state.conversationPromise) {
     state.conversationPromise = loadLatestConversation().then(conversation => {
       state.conversationId = conversation?.id || null;
@@ -491,16 +698,24 @@ async function restoreConversation() {
 }
 
 async function persistChatMessage(role, content) {
+  const history = readLocalChatHistory();
+  history.push({ role, content, created_at: new Date().toISOString() });
+  localStorage.setItem(localChatHistoryKey(), JSON.stringify(history.slice(-200)));
+  if (!auth.getUserId()) return;
   try {
     const conversation = await getConversation();
     if (conversation?.id) await saveChatMessage(conversation.id, role, content);
   } catch (error) {
-    console.error("Could not save chat message:", error);
-    toast(`Chat message could not be saved: ${error.message}`);
+    console.error("Could not sync chat message:", error);
+    toast(`Chat saved on this device, but cloud sync failed: ${error.message}`);
   }
 }
 
 function logActivity(actionType, details = {}, status = "performed") {
+  const activities = readLocalActivity();
+  activities.push({ type: actionType, details, status, created_at: new Date().toISOString() });
+  localStorage.setItem(localActivityKey(), JSON.stringify(activities.slice(-300)));
+  if (!auth.getUserId()) return;
   saveActivityEvent(actionType, status, details).catch(error => {
     console.error("Could not save action history:", error);
     toast(`Action history could not be saved: ${error.message}`);
@@ -508,6 +723,7 @@ function logActivity(actionType, details = {}, status = "performed") {
 }
 
 function persistSettings(changes) {
+  if (!auth.getUserId()) return;
   saveUserSettings(changes).catch(error => {
     console.error("Could not save account settings:", error);
     toast(`Settings changed on this device, but account sync failed: ${error.message}`);
@@ -515,6 +731,7 @@ function persistSettings(changes) {
 }
 
 async function restoreAccountSettings() {
+  if (!auth.getUserId()) return;
   try {
     const settings = await loadUserSettings();
     if (!settings || state.page !== "me") return;
@@ -550,6 +767,18 @@ async function restoreAccountSettings() {
       localStorage.setItem("visionmate.model", settings.geminiModel);
       const modelSelect = document.querySelector("#gemini-model");
       if (modelSelect) modelSelect.value = settings.geminiModel;
+    }
+    if (["describe", "reading", "shopping", "indoor", "directional"].includes(settings.assistanceMode)) {
+      state.assistanceMode = settings.assistanceMode;
+      localStorage.setItem("visionmate.assistanceMode", settings.assistanceMode);
+      const modeSelect = document.querySelector("#assistance-mode");
+      if (modeSelect) modeSelect.value = settings.assistanceMode;
+    }
+    if (typeof settings.privacyMode === "boolean") {
+      state.privacyMode = settings.privacyMode;
+      localStorage.setItem("visionmate.privacyMode", settings.privacyMode ? "on" : "off");
+      const privacyToggle = document.querySelector("#privacy-mode");
+      if (privacyToggle) privacyToggle.checked = settings.privacyMode;
     }
     if (typeof settings.translationTarget === "string" && APP_CONFIG.languages[settings.translationTarget]) {
       localStorage.setItem("visionmate.translationTarget", settings.translationTarget);
@@ -589,6 +818,103 @@ async function handleCommand(command) {
   if (!text) return;
   logActivity("assistant_command", { characterCount: text.length }, "requested");
   addMessage(text, document.querySelector("#conversation"), true);
+  const destinationMatch = text.match(/\b(?:take me to|help me (?:get|reach)(?: to)?|navigate to|directions to|route to|go to|visit|reach)\s+(.+?)(?:\s+from (?:my )?current location)?[.!?]*$/i);
+  if (destinationMatch?.[1]?.trim()) {
+    const destination = destinationMatch[1].replace(/[.!?]+$/u, "").trim();
+    setPage("go", false);
+    document.querySelector("#route-destination").value = destination;
+    const response = `I filled in ${destination}. I can show an informational distance and time estimate after you agree to share your location and destination. I cannot give turn-by-turn or safety guidance.`;
+    addMessage(response);
+    speech.speak(response);
+    return;
+  }
+  if (/\b(?:open|show)\s+(?:the\s+)?(?:go|navigation|route estimates?)\b|\broute estimate\b/i.test(text)) {
+    setPage("go", false);
+    speech.speak("Go is ready. Enter or dictate a destination, review the location-sharing notice, and choose Estimate distance and time.");
+    return;
+  }
+  if (/\b(?:open|launch|start|show|turn on|enable)\s+(?:the\s+)?(?:vision\s*lens|camera)\b|\bcamera on\b/i.test(text)) {
+    await openVisionLens();
+    return;
+  }
+  if (/\b(?:zoom in|zoom closer|zoom out|zoom back)\b/i.test(text)) {
+    if (state.page !== "vision") await openVisionLens();
+    if (!state.visionActive) return;
+    const direction = /\b(?:zoom in|zoom closer)\b/i.test(text) ? 0.5 : -0.5;
+    await setCameraZoom(state.cameraZoom + direction, true);
+    return;
+  }
+  if (/\b(?:switch|flip|change)\s+(?:the\s+)?camera\b|\b(?:front|rear)\s+camera\b/i.test(text)) {
+    if (state.page !== "vision") await openVisionLens();
+    if (!state.visionActive) return;
+    await switchCamera();
+    return;
+  }
+  if (/\b(?:fullscreen|full screen)\b/i.test(text)) {
+    if (state.page !== "vision") await openVisionLens();
+    if (!state.visionActive) return;
+    await toggleCameraFullscreen();
+    return;
+  }
+  if (/\b(?:stop|turn off|turn the camera off|close)\s+(?:the\s+)?(?:vision\s*lens|camera|camera preview)\b|\bturn (?:the )?camera off\b|\bcamera off\b/i.test(text)) {
+    if (state.page !== "vision") setPage("vision", false);
+    if (state.visionActive) await toggleCamera(document.querySelector("#camera-toggle"));
+    else {
+      addMessage("The camera is already off.");
+      speech.speak("The camera is already off.");
+    }
+    return;
+  }
+  if (/\b(?:read|scan|capture)\s+(?:(?:this|that|the|a|my)\s+)?(?:menu|sign|label|document|text|receipt)\b/i.test(text)) {
+    await openVisionLens({ mode: "reading", capture: true });
+    return;
+  }
+  if (/\b(?:take|capture)\s+(?:(?:a|the)\s+)?(?:photo|picture|image)\b/i.test(text)) {
+    await openVisionLens({ mode: state.assistanceMode, capture: true });
+    return;
+  }
+  if (/\b(?:start|enable)\s+(?:continuous\s+)?(?:scene )?updates\b|\bstart monitoring\b/i.test(text)) {
+    await openVisionLens();
+    await startVisionMonitoring();
+    return;
+  }
+  if (/\b(?:stop|disable)\s+(?:continuous\s+)?(?:scene )?updates\b|\bstop monitoring\b/i.test(text)) {
+    stopVisionMonitoring();
+    addMessage("Periodic scene updates stopped.");
+    speech.speak("Periodic scene updates stopped.");
+    return;
+  }
+  if (/\b(?:volume buttons?|volume up|volume down|hold both buttons)\b/i.test(text)) {
+    const response = "Web browsers cannot detect or bind the phone’s volume buttons. Open Voice and press and hold the on-screen Talk button instead.";
+    addMessage(response);
+    speech.speak(response);
+    return;
+  }
+  if (/\b(?:walk|walking|footpath|sidewalk|pedestrian|path clear|road crossing|cross the road|obstacle|pothole)\b/i.test(text)) {
+    const response = "I cannot guide movement, judge footpath safety, or detect hazards reliably. Go can show an informational route distance and time estimate only; please use a validated navigation aid and your cane, guide dog, or trusted human assistance.";
+    addMessage(response);
+    speech.speak(response);
+    return;
+  }
+  if (/\b(?:navigate|route|destination|directions?)\b/i.test(text)) {
+    setPage("go", false);
+    const response = "Go can estimate route distance and time after you enter a destination and agree to share your location. It cannot provide turn-by-turn or safety guidance.";
+    addMessage(response);
+    speech.speak(response);
+    return;
+  }
+  if (/\b(?:buy|purchase|order|add .* to (?:the )?cart|checkout)\b/i.test(text)) {
+    const response = "I can help read product details from a camera image, but I cannot control shopping apps, add items to a cart, or place orders. Please review and complete any purchase yourself in the retailer’s app.";
+    addMessage(response);
+    speech.speak(response);
+    return;
+  }
+  if (/\b(?:is|does|can)\b.{0,40}\b(?:person|man|woman|people)\b.{0,50}\b(?:dangerous|threat|suspicious)\b|\b(?:identify|recognize)\b.{0,30}\bperson\b|\b(?:detect|read|tell me|infer)\b.{0,30}\b(?:emotion|intent|threat)\b/i.test(text)) {
+    const response = "I can’t identify people or infer emotion, intent, or dangerousness from an image. I can describe non-person scene details, but this is not a safety monitor.";
+    addMessage(response);
+    speech.speak(response);
+    return;
+  }
   const noteMatch = text.match(/(?:write|save|take|make)\s+(?:a\s+)?note(?:\s+(?:that|saying|to))?\s*[:,-]?\s*(.+)/i);
   if (noteMatch) {
     const record = await saveItem("notes", { content: noteMatch[1].trim() });
@@ -629,11 +955,6 @@ async function handleCommand(command) {
     const response = "I can’t close other apps from a website. Android app-control permissions require a native app; you can use your phone’s app switcher.";
     addMessage(response); speech.speak(response); return;
   }
-  if (/read (?:the )?(?:menu|sign|label|document)|menu/.test(text.toLowerCase())) {
-    if (state.page !== "vision") setPage("vision", false);
-    const response = "Please point the camera at the menu and hold your phone steady. Then tap Capture and describe this view. I’ll try to read the text, but may miss or misread items.";
-    addMessage(response); speech.speak(response); return;
-  }
   if (/^\s*(?:sos|emergency help|help me)\s*$/i.test(text)) {
     triggerSos(); return;
   }
@@ -645,9 +966,10 @@ async function handleCommand(command) {
     }, 250);
     return;
   }
-  if (/walk|walking|guide me|path clear|road|pothole|obstacle|risk/i.test(text)) {
-    const response = "I can’t safely guide walking or confirm road hazards. Please stop and use your cane, guide dog, trusted person, or a validated mobility aid. This camera prototype must not be used for navigation.";
-    addMessage(response); speech.speak(response); return;
+  const objectSearch = text.match(/\bfind (?:my )?(.+)/i);
+  if (objectSearch) {
+    await openVisionLens({ mode: "object", question: `Find ${objectSearch[1].trim()}`, capture: true });
+    return;
   }
   const callMatch = text.match(/\bcall\s+(.+?)(?:\s+please)?$/i);
   if (callMatch) {
@@ -683,14 +1005,214 @@ async function handleCommand(command) {
     return;
   }
   try {
-    const result = await invokeAssistant({ prompt: text, model: selectedGeminiModel() });
-    addMessage(`${result.text} AI-generated response; please verify important information.`);
-    speech.speak(`${result.text} AI-generated response. Please verify important information.`);
+    const result = await invokeAssistant({
+      prompt: `Classify this user's request and return exactly one JSON object with this schema:
+{"action":"navigate|capture|start_camera|stop_camera|start_monitor|stop_monitor|emergency|translate|set_language|set_focus|set_theme|open_web|call_contact|answer","page":"","mode":"","query":"","text":"","sourceLanguage":"","targetLanguage":"","value":"","name":"","speech":""}
+Use only these pages: home, go, vision, voice, translate, me, permissions. Capture modes: describe, reading, shopping, indoor, directional, object, ask. Focus values: describe, reading, shopping, indoor, directional. Language values: ${Object.keys(APP_CONFIG.languages).join(", ")}. Web app values: whatsapp, gmail, maps, classroom. Theme values: dark, light.
+Use capture for a user-requested image description/document/product/sign/object search/question; include mode and query if needed. Use start_camera or start_monitor only for explicit requests to start those features. Use emergency for a request for help. Use translate for a request to translate supplied text and include source/target language codes when stated. Use set_language/set_focus/set_theme only for a clear preference request. Use open_web/call_contact only to present an explicit user-requested action for confirmation. Use answer for ordinary questions or requests that are not a supported in-app action; speech should contain the concise answer or tell the user what you can do. Write every user-facing value, especially speech, in ${APP_CONFIG.languages[state.language].name}. Never claim that anything was done unless it has been done. Do not interpret requests for walking or crossing guidance as capture/navigation; instead refuse that guidance in speech. User request: ${JSON.stringify(text)}`,
+      model: selectedGeminiModel(),
+      mode: "intent"
+    });
+    await executeGeminiIntent(result.text);
   } catch (error) {
     console.error("Assistant request failed:", error);
-    const result = answerFor(text, state.language);
-    const fallback = `${result.text} Confidence ${result.confidence} percent. ${error.message}`;
-    addMessage(fallback); speech.speak(fallback); toast(error.message);
+    const unavailable = `I could not connect to the AI service. ${error.message}`;
+    addMessage(unavailable); speech.speak(unavailable); toast(error.message);
+  }
+}
+
+function normalizeGeminiIntent(rawText) {
+  const jsonText = rawText.trim().replace(/^```(?:json)?\s*/iu, "").replace(/\s*```$/u, "");
+  const intent = JSON.parse(jsonText);
+  const allowedActions = new Set([
+    "navigate", "capture", "start_camera", "stop_camera", "start_monitor", "stop_monitor",
+    "emergency", "translate", "set_language", "set_focus", "set_theme", "open_web",
+    "call_contact", "answer"
+  ]);
+  if (!intent || typeof intent !== "object" || !allowedActions.has(intent.action)) {
+    throw new Error("The assistant returned an unsupported app action.");
+  }
+  for (const key of ["page", "mode", "query", "text", "sourceLanguage", "targetLanguage", "value", "name", "speech"]) {
+    if (intent[key] !== undefined && typeof intent[key] !== "string") {
+      throw new Error("The assistant returned invalid action details.");
+    }
+    if (typeof intent[key] === "string") intent[key] = intent[key].slice(0, 2000);
+  }
+  return intent;
+}
+
+function addConfirmedVoiceAction(label, action, attributes = {}) {
+  const target = document.querySelector("#conversation");
+  if (!target) return false;
+  const bubble = document.createElement("div");
+  bubble.className = "message";
+  bubble.textContent = `${label} I have not done this yet. Choose the button to continue.`;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "button button-primary";
+  button.textContent = label;
+  button.dataset.action = action;
+  for (const [key, value] of Object.entries(attributes)) button.dataset[key] = value;
+  bubble.append(button);
+  target.append(bubble);
+  target.scrollTop = target.scrollHeight;
+  persistChatMessage("assistant", bubble.textContent);
+  speech.speak(bubble.textContent);
+  return true;
+}
+
+async function executeGeminiIntent(rawText) {
+  const intent = normalizeGeminiIntent(rawText);
+  const say = text => {
+    const message = String(text || "I’m not sure what you’d like me to do. Please try again.").slice(0, 1200);
+    addMessage(message);
+    speech.speak(message);
+  };
+  const pages = new Set(["home", "go", "vision", "voice", "translate", "me", "permissions"]);
+  const modes = new Set(["describe", "reading", "shopping", "indoor", "directional", "object", "ask"]);
+  const webApps = new Set(["whatsapp", "gmail", "maps", "classroom"]);
+
+  switch (intent.action) {
+    case "navigate":
+      if (!pages.has(intent.page)) return say("I can open Home, Go, Vision, Voice, Translate, Profile, or Permissions.");
+      if (!auth.getSession() && intent.page !== "home" && intent.page !== "permissions") {
+        state.profile = auth.startGuestSession();
+      }
+      if (intent.page === "vision") return openVisionLens();
+      setPage(intent.page, false);
+      return say(pageAnnouncement(intent.page));
+    case "capture": {
+      const mode = modes.has(intent.mode) ? intent.mode : "describe";
+      if (!auth.getSession()) {
+        setPage("auth");
+        return say("Please sign in before using camera assistance.");
+      }
+      if (state.page !== "vision") setPage("vision", false);
+      if (!state.visionActive) {
+        say("I’ll ask the browser to start the camera. Grant permission if prompted, and stay safely stationary.");
+        await toggleCamera(document.querySelector("#camera-toggle"));
+      }
+      if (!state.visionActive) return;
+      await captureAndDescribe(mode, intent.query || intent.text || "");
+      return;
+    }
+    case "start_camera":
+      if (!auth.getSession()) {
+        setPage("auth");
+        return say("Please sign in before using the camera.");
+      }
+      if (state.page !== "vision") setPage("vision", false);
+      if (!state.visionActive) await toggleCamera(document.querySelector("#camera-toggle"));
+      else say("The camera preview is already on.");
+      return;
+    case "stop_camera":
+      if (state.page !== "vision") setPage("vision", false);
+      if (state.visionActive) await toggleCamera(document.querySelector("#camera-toggle"));
+      else say("The camera is already off.");
+      return;
+    case "start_monitor":
+      if (!auth.getSession()) {
+        setPage("auth");
+        return say("Please sign in before starting scene updates.");
+      }
+      if (state.page !== "vision") setPage("vision", false);
+      await startVisionMonitoring();
+      return;
+    case "stop_monitor":
+      stopVisionMonitoring();
+      if (state.page === "vision") {
+        const button = document.querySelector('[data-action="monitor-toggle"]');
+        if (button) button.textContent = "Start updates";
+      }
+      return say("Periodic scene updates stopped.");
+    case "emergency":
+      setPage("emergency");
+      return say("Opening emergency support. Calls and messages still require your confirmation.");
+    case "set_language": {
+      const language = (intent.value || "").toLowerCase();
+      if (!APP_CONFIG.languages[language]) return say("I can speak English, Hindi, Tamil, Telugu, Kannada, Malayalam, or Punjabi. Open Profile to change languages.");
+      state.language = language;
+      speech.setLanguage(language);
+      localStorage.setItem("visionmate.language", language);
+      persistSettings({ language });
+      return say(`Spoken language set to ${APP_CONFIG.languages[language].name}.`);
+    }
+    case "set_focus": {
+      const focus = (intent.value || "").toLowerCase();
+      if (!["describe", "reading", "shopping", "indoor", "directional"].includes(focus)) {
+        return say("Choose scene description, reading, shopping, indoor signs, or image positions in Vision Assist.");
+      }
+      state.assistanceMode = focus;
+      localStorage.setItem("visionmate.assistanceMode", focus);
+      persistSettings({ assistanceMode: focus });
+      if (state.page === "vision") {
+        const select = document.querySelector("#assistance-mode");
+        if (select) select.value = focus;
+      }
+      return say(`Assistance focus set to ${focus}.`);
+    }
+    case "set_theme": {
+      const theme = (intent.value || "").toLowerCase();
+      if (!["dark", "light"].includes(theme)) return say("VisionMate appearance can be dark or light.");
+      updateAppearance(theme);
+      persistSettings({ theme });
+      return say(`VisionMate appearance set to ${theme}. I cannot change your phone's system theme.`);
+    }
+    case "translate": {
+      const text = (intent.text || intent.query || "").trim().slice(0, 2000);
+      const sourceLanguage = (intent.sourceLanguage || state.language).toLowerCase();
+      const targetLanguage = (intent.targetLanguage || "").toLowerCase();
+      if (!text || !APP_CONFIG.languages[sourceLanguage] || !APP_CONFIG.languages[targetLanguage] || sourceLanguage === targetLanguage) {
+        setPage("translate", false);
+        return say("I’ve opened Translate. Enter or dictate the text and choose the source and target languages.");
+      }
+      setPage("translate", false);
+      const output = document.querySelector("#translation-output");
+      const input = document.querySelector("#translate-input");
+      const source = document.querySelector("#source-language");
+      const target = document.querySelector("#target-language");
+      if (!output || !input || !source || !target) return say("Translate is not ready yet. Please try again.");
+      input.value = text;
+      source.value = sourceLanguage;
+      target.value = targetLanguage;
+      output.textContent = "Translating…";
+      try {
+        const translation = await machineTranslate({
+          text,
+          sourceLanguage,
+          targetLanguage,
+          provider: localStorage.getItem("visionmate.translationProvider") || "anuvaadhub"
+        });
+        output.textContent = translation;
+        return say(`Translation: ${translation}. Please verify important meaning.`);
+      } catch (error) {
+        output.textContent = `Translation failed: ${error.message}`;
+        throw error;
+      }
+    }
+    case "open_web": {
+      const app = (intent.value || "").toLowerCase();
+      if (!webApps.has(app)) return say("I can offer browser links to WhatsApp, Gmail, Maps, or Classroom.");
+      if (!addConfirmedVoiceAction(`Open ${app}`, "open-app", { app })) {
+        return say("I couldn't show the confirmation button. Please try again from Voice tools.");
+      }
+      return;
+    }
+    case "call_contact": {
+      const name = (intent.name || "").trim().toLowerCase();
+      const contact = getLocalItems("contacts").find(item =>
+        (item.display_name || item.name || "").toLowerCase() === name
+      );
+      if (!contact) return say("I couldn’t find that saved contact. Open Voice tools to add them first.");
+      if (!addConfirmedVoiceAction(`Call ${contact.display_name || contact.name}`, "call-contact", { phone: contact.phone })) {
+        return say("I couldn't show the call confirmation button. Please try again from Voice tools.");
+      }
+      return;
+    }
+    case "answer":
+      return say(intent.speech || "I heard you. You can ask about a camera image, translate text, save a note, or ask me to open an app section.");
+    default:
+      return say("I can’t perform that action from VisionMate.");
   }
 }
 
@@ -714,9 +1236,8 @@ function scheduleReminder(reminder) {
 }
 
 async function loadCloudItems() {
+  if (!auth.getUserId()) return;
   try {
-    const client = await getSupabaseClient();
-    if (!client) return;
     for (const kind of ["notes", "contacts", "reminders"]) {
       const records = await listOwnedRecords(kind);
       if (!records) continue;
@@ -737,7 +1258,7 @@ async function loadCloudItems() {
       }
       const combined = [...uploaded, ...records, ...localItems.filter(item => item._pendingSync && !syncedLocalIds.has(item.id))];
       const unique = [...new Map(combined.map(item => [item.id, item])).values()];
-      localStorage.setItem(`visionmate.${kind}`, JSON.stringify(unique));
+      localStorage.setItem(localItemsKey(kind), JSON.stringify(unique));
     }
     renderSavedItems();
     getLocalItems("reminders").forEach(scheduleReminder);
@@ -799,77 +1320,204 @@ function beginLocationTracking() {
 
 function triggerSos() {
   if (navigator.vibrate) navigator.vibrate([450, 120, 450, 120, 850]);
-  speech.speak("SOS requested. I’ll try to find your current location. This prototype does not automatically call emergency services.");
-  if (!navigator.geolocation) {
-    toast("Location is unavailable. Please contact a trusted person or local emergency services directly.");
-    return;
-  }
-  navigator.geolocation.getCurrentPosition(position => {
-    const { latitude, longitude } = position.coords;
-    const link = `https://maps.google.com/?q=${latitude},${longitude}`;
-    const message = `Your location is ${latitude.toFixed(5)}, ${longitude.toFixed(5)}.`;
-    speech.speak(`${message} Tap the location link to view it. This prototype does not contact emergency services.`);
-    const alert = document.querySelector("#live-feedback");
-    if (alert) {
-      document.querySelector(".sos-map-link")?.remove();
-      const linkElement = document.createElement("a");
-      linkElement.href = link;
-      linkElement.target = "_blank";
-      linkElement.rel = "noopener noreferrer";
-      linkElement.textContent = "Open SOS location in Google Maps";
-      linkElement.className = "sos-map-link";
-      linkElement.setAttribute("aria-label", "Open SOS location in Google Maps");
-      alert.after(linkElement);
-    }
-    toast(message);
-  }, error => {
-    console.error("SOS location request failed:", error);
-    speech.speak(`I could not get your location. ${error.message}. Please call for help directly.`);
-    toast("Could not get location. Contact a trusted person or emergency services directly.");
-  }, { enableHighAccuracy: true, timeout: 12000 });
+  setPage("emergency");
+  speech.speak("Emergency help screen. Choose whether to call your trusted contact or prepare a location message. Nothing is sent automatically.");
 }
 
-async function captureAndDescribe(mode = "menu") {
-  const video = document.querySelector("#camera-video");
-  if (!state.visionActive || !video?.videoWidth) {
-    speech.speak("Start the camera preview first, then point it at the menu or object.");
+function emergencyContactKey() {
+  return `visionmate.${auth.getUserId() || "device"}.emergencyPhone`;
+}
+
+function updateConnectionStatus() {
+  const online = navigator.onLine;
+  const homeStatus = document.querySelector("#offline-status");
+  if (homeStatus) homeStatus.textContent = online ? "Online · cloud services checked when requested" : "Offline · local emergency tools only";
+  const emergencyStatus = document.querySelector("#emergency-connection");
+  if (emergencyStatus) emergencyStatus.textContent = online ? "Online · emergency screen available" : "Offline · emergency screen available";
+  const header = document.querySelector("#connection-label");
+  if (header) header.textContent = online ? "Ready when you are" : "Offline mode";
+}
+
+function requestEmergencyLocation() {
+  const output = document.querySelector("#emergency-location-output");
+  state.emergencyLocation = null;
+  if (!navigator.geolocation) {
+    if (output) output.textContent = "Location is unavailable in this browser. Call your contact directly.";
+    speech.speak("Location is not available. Please call your trusted contact.");
+    return null;
+  }
+  if (output) output.textContent = "Requesting your location…";
+  return new Promise(resolve => navigator.geolocation.getCurrentPosition(position => {
+    const { latitude, longitude } = position.coords;
+    state.emergencyLocation = `https://maps.google.com/?q=${latitude},${longitude}`;
+    if (output) output.textContent = `Location ready: ${latitude.toFixed(5)}, ${longitude.toFixed(5)}. Tap Prepare location text to open your messaging app.`;
+    speech.speak("Location ready. It has not been sent. Choose Prepare location text to review a message.");
+    resolve(state.emergencyLocation);
+  }, error => {
+    console.error("Emergency location request failed:", error);
+    if (output) output.textContent = `Could not get location: ${error.message}. You can still call your contact.`;
+    speech.speak("I could not get your location. You can still call your trusted contact.");
+    resolve(null);
+  }, { enableHighAccuracy: true, timeout: 12000 }));
+}
+
+function callEmergencyContact() {
+  const phone = localStorage.getItem(emergencyContactKey()) || "";
+  const normalized = phone.replace(/[^\d+*#,;]/g, "");
+  if (!/^[+*#,;0-9]{3,40}$/.test(normalized)) {
+    toast("Save a valid trusted contact phone number first.");
     return;
   }
+  if (window.confirm(`Open your phone dialer to call ${normalized}? You must confirm the call on your device.`)) {
+    window.location.href = `tel:${normalized}`;
+  }
+}
+
+async function prepareEmergencyText() {
+  const phone = localStorage.getItem(emergencyContactKey()) || "";
+  const normalized = phone.replace(/[^\d+*#,;]/g, "");
+  if (!/^[+*#,;0-9]{3,40}$/.test(normalized)) {
+    toast("Save a valid trusted contact phone number first.");
+    return;
+  }
+  if (!state.emergencyLocation) await requestEmergencyLocation();
+  const message = state.emergencyLocation
+    ? `I may need help. My last shared location is: ${state.emergencyLocation}`
+    : "I may need help. Please contact me.";
+  window.location.href = `sms:${normalized}?body=${encodeURIComponent(message)}`;
+}
+
+function captureCurrentFrame() {
+  const video = document.querySelector("#camera-video");
+  if (!state.visionActive || !video?.videoWidth) return null;
   const canvas = document.createElement("canvas");
   const maxEdge = 1280;
-  const scale = Math.min(1, maxEdge / video.videoWidth, maxEdge / video.videoHeight);
-  canvas.width = Math.round(video.videoWidth * scale);
-  canvas.height = Math.round(video.videoHeight * scale);
-  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-  const imageUrl = canvas.toDataURL("image/jpeg", 0.82);
+  const digitalZoom = state.camera?.isDigitalZoom ? state.camera.zoom : 1;
+  const preview = document.querySelector("#vision-preview");
+  const targetAspect = preview?.clientWidth && preview?.clientHeight
+    ? preview.clientWidth / preview.clientHeight
+    : video.videoWidth / video.videoHeight;
+  let sourceWidth = video.videoWidth / digitalZoom;
+  let sourceHeight = video.videoHeight / digitalZoom;
+  if (sourceWidth / sourceHeight > targetAspect) sourceWidth = sourceHeight * targetAspect;
+  else sourceHeight = sourceWidth / targetAspect;
+  const sourceX = (video.videoWidth - sourceWidth) / 2;
+  const sourceY = (video.videoHeight - sourceHeight) / 2;
+  const scale = Math.min(1, maxEdge / sourceWidth, maxEdge / sourceHeight);
+  canvas.width = Math.round(sourceWidth * scale);
+  canvas.height = Math.round(sourceHeight * scale);
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Could not capture a camera frame.");
+  context.drawImage(video, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, canvas.width, canvas.height);
+  const imageUrl = canvas.toDataURL("image/jpeg", 0.78);
   const image = document.querySelector("#menu-photo");
-  image.src = imageUrl;
-  image.classList.remove("hidden");
-  const prompt = "Describe the visible scene briefly for accessibility. Mention only clearly visible objects and any possible obstacle or hazard that is directly apparent, using cautious language. Do not infer hidden dangers, say that an area or path is safe, or tell the user how to walk or avoid objects. This single image may be incomplete or wrong.";
-  speech.speak(mode === "scene"
-    ? "I’ve captured one camera frame. I’ll describe visible details, but I cannot reliably identify hazards or guide walking. Please remain stationary and use a trusted mobility aid."
-    : "I’ve captured one frame. I’ll try to read the visible text. I may misread it, so please verify important details.");
+  if (image) {
+    image.src = imageUrl;
+    image.classList.remove("hidden");
+  }
+  return { imageBase64: imageUrl.split(",")[1], mimeType: "image/jpeg" };
+}
+
+function visionPrompt(mode, question = "") {
+  const privacy = state.privacyMode
+    ? "Do not describe or identify people; ignore faces and personal identity."
+    : "Never identify people or infer personal identity.";
+  const shared = `You are VisionMate, an accessible visual assistant. Be concise, kind, and explicit about uncertainty. ${privacy} Never identify people or infer their emotion, intent, dangerousness, or risk. Never state that a road, crossing, path, or obstacle is safe. Never give walking, crossing, steering, or obstacle-avoidance directions. This is a single still image and may be incomplete or wrong.`;
+  const instructions = {
+    describe: "Describe a few clearly visible objects and their approximate positions in the image. Do not make safety judgments.",
+    reading: "Transcribe all legible text from the image. For menus, labels, and documents, organize the visible content into a clear list with headings, item names, prices, and table rows/columns when present. Preserve numbers and mark unclear text as uncertain; do not invent missing content.",
+    shopping: "Help with shopping by reading visible product names, sizes, prices, or labels. State only legible information and flag uncertainty; do not infer ingredients or safety from an unclear label.",
+    indoor: "Describe visible indoor signs, room labels, counters, and landmarks. Read sign text when legible. Do not give directions or claim to know the user's location.",
+    directional: "Describe visible objects grouped as left side, center, or right side of this image only. Clearly say these are image positions, not directions for movement. Do not assess hazards, identify people, infer emotion or intent, or label anyone dangerous.",
+    object: "Search this image for the requested object. Say whether it is clearly visible and describe its approximate position within the image (left, center, or right). If uncertain or absent, say so. Never tell the user how to move.",
+    ask: "Answer the user's question using only clearly visible image details. If the question cannot be answered from the image, say what is uncertain."
+  };
+  return `${shared} Respond in ${APP_CONFIG.languages[state.language].name} when possible.\nTask: ${instructions[mode] || instructions.describe}${question ? `\nUser request: ${question.slice(0, 500)}` : ""}`;
+}
+
+async function openVisionLens({ mode, question = "", capture = false } = {}) {
+  if (!auth.getSession()) state.profile = auth.startGuestSession();
+  if (state.page !== "vision") setPage("vision", false);
+  if (!state.visionActive) {
+    speech.speak("Opening Vision Lens. The browser will ask for camera permission if needed. I only analyze a photo when you ask.");
+    await toggleCamera(document.querySelector("#camera-toggle"));
+  } else {
+    speech.speak("Vision Lens is open. The camera preview is active.");
+  }
+  if (capture && state.visionActive) await captureAndDescribe(mode || state.assistanceMode, question);
+}
+
+async function captureAndDescribe(mode = state.assistanceMode, question = "") {
+  let frame;
   try {
-    let text;
-    if (mode === "scene") {
-      const result = await invokeAssistant({
-        prompt,
-        imageBase64: imageUrl.split(",")[1],
-        mimeType: "image/jpeg",
-        model: selectedGeminiModel()
-      });
-      text = result.text;
-    } else {
-      text = await recognizeImage(imageUrl.split(",")[1], "image/jpeg", state.language);
-    }
-    document.querySelector("#vision-caption").textContent = mode === "scene" ? "One-frame Gemini scene description" : "Anuvaadhub OCR · verify the result";
-    document.querySelector("#vision-detail").textContent = text;
-    speech.speak(`${text} This image reading can be wrong. Please verify important details.`);
+    frame = captureCurrentFrame();
+  } catch (error) {
+    toast(error.message);
+    return;
+  }
+  if (!frame) {
+    speech.speak("Start the camera preview first, while safely stationary.");
+    toast("Start the camera preview before asking about an image.");
+    return;
+  }
+  const caption = document.querySelector("#vision-caption");
+  const detail = document.querySelector("#vision-detail");
+  const modeLabels = {
+    describe: "Scene description",
+    reading: "Document reading",
+    shopping: "Shopping details",
+    indoor: "Indoor signs",
+    directional: "Image position description",
+    object: "Object search",
+    ask: "Answer about this view"
+  };
+  if (caption) caption.textContent = `${modeLabels[mode] || "Vision assist"} · analyzing…`;
+  if (detail) detail.textContent = "One still image is being sent to the configured AI provider. Results may be wrong.";
+  if (!navigator.onLine) {
+    if (detail) detail.textContent = "Visual AI requires an internet connection. Your camera preview remains local.";
+    speech.speak("Visual AI is offline. Your camera preview remains on this device.");
+    return;
+  }
+  speech.speak("Analyzing one image. Stay safely stationary; this is not walking guidance.");
+  try {
+    const result = await invokeAssistant({
+      prompt: visionPrompt(mode, question),
+      ...frame,
+      model: selectedGeminiModel()
+    });
+    if (caption) caption.textContent = `${modeLabels[mode] || "Vision assist"} · ${result.model || "AI"}`;
+    if (detail) detail.textContent = `${result.text} Confidence: unverified. Check important details with a trusted person.`;
+    logActivity("vision_analysis", { mode });
+    speech.speak(`${result.text} Confidence is unverified. This is not navigation or hazard detection.`);
   } catch (error) {
     console.error("Camera image analysis failed:", error);
+    if (detail) detail.textContent = `Could not analyze the image: ${error.message}`;
     speech.speak(`I could not read this image. ${error.message}`);
     toast(error.message);
   }
+}
+
+function stopVisionMonitoring() {
+  if (state.visionMonitorTimer) clearTimeout(state.visionMonitorTimer);
+  state.visionMonitorTimer = null;
+  state.visionMonitoring = false;
+}
+
+async function startVisionMonitoring() {
+  if (!state.visionActive) {
+    await toggleCamera(document.querySelector("#camera-toggle"));
+    if (!state.visionActive) return;
+  }
+  state.visionMonitoring = true;
+  const button = document.querySelector('[data-action="monitor-toggle"]');
+  if (button) button.textContent = "Stop updates";
+  speech.speak("Periodic scene updates started. A camera image will be sent every 30 seconds. This is not safety monitoring. Tap Stop updates at any time.");
+  const update = async () => {
+    if (!state.visionMonitoring || state.page !== "vision") return;
+    await captureAndDescribe("describe");
+    if (state.visionMonitoring) state.visionMonitorTimer = setTimeout(update, 30000);
+  };
+  await update();
 }
 
 async function startAnuvaadhubRecording(button) {
@@ -908,18 +1556,20 @@ async function startAnuvaadhubRecording(button) {
 }
 
 async function syncProfile(profile) {
-  const syncTasks = [
-    saveProfileRecord(profile).then(() => "").catch(error => {
+  if (!auth.getUserId()) return;
+  const syncTasks = [];
+  if (auth.getSession()) {
+    syncTasks.push(saveProfileRecord(profile).then(() => "").catch(error => {
       console.error("Supabase profile sync failed:", error);
       return `Supabase: ${error.message}`;
-    })
-  ];
-  if (auth.getSession()) {
-    syncTasks.push(saveFirebaseProfile(profile).then(saved => saved ? "" : "Firebase profile was not synced.")
-      .catch(error => {
-        console.error("Firebase profile sync failed:", error);
-        return `Firebase: ${error.message}`;
-      }));
+    }));
+    if (APP_CONFIG.firebase.databaseURL) {
+      syncTasks.push(saveFirebaseProfile(profile).then(saved => saved ? "" : "Firebase profile was not synced.")
+        .catch(error => {
+          console.error("Firebase profile sync failed:", error);
+          return `Firebase: ${error.message}`;
+        }));
+    }
   }
   const failures = (await Promise.all(syncTasks)).filter(Boolean);
   if (failures.length) toast(`Profile saved on this device. ${failures.join(" ")}`);
@@ -989,35 +1639,132 @@ async function requestPermission(type, button) {
 async function toggleCamera(button) {
   const video = document.querySelector("#camera-video");
   if (state.visionActive) {
+    stopVisionMonitoring();
+    const monitorButton = document.querySelector('[data-action="monitor-toggle"]');
+    if (monitorButton) monitorButton.textContent = "Start updates";
     state.camera?.stop();
     state.camera = null;
     state.visionActive = false;
     video.classList.add("hidden");
     document.querySelector(".camera-visual")?.classList.remove("hidden");
     document.querySelector("#vision-preview")?.classList.remove("active");
-    document.querySelector("#vision-status").textContent = "READY WHEN YOU ARE";
+    document.querySelector("#vision-status").textContent = getCameraStatusLabel();
     document.querySelector("#vision-detail").textContent = "Start the camera preview when you’re safely stationary. I cannot identify hazards.";
-    button.innerHTML = `${icon("eye")} Start camera preview`;
+    if (button) button.innerHTML = `${icon("eye")} Start camera preview`;
+    updateCameraControlState(false);
+    document.querySelector("#camera-zoom").value = String(state.cameraZoom);
+    document.querySelector("#camera-zoom-value").textContent = `${state.cameraZoom.toFixed(1)}x`;
     speech.speak("Camera preview stopped. Remember, I cannot detect obstacles.");
     return;
   }
   try {
-    state.camera = new CameraController(video);
+    state.camera = new CameraController(video, message => {
+      if (message !== "Camera preview ended." || state.camera?.stream?.active) return;
+      state.camera = null;
+      state.visionActive = false;
+      stopVisionMonitoring();
+      video.classList.add("hidden");
+      document.querySelector(".camera-visual")?.classList.remove("hidden");
+      document.querySelector("#vision-preview")?.classList.remove("active");
+      document.querySelector("#vision-status").textContent = getCameraStatusLabel();
+      document.querySelector("#vision-detail").textContent = "The camera stream ended. Start the preview again if you want to use it.";
+      const cameraButton = document.querySelector("#camera-toggle");
+      if (cameraButton) cameraButton.innerHTML = `${icon("eye")} Start camera preview`;
+      updateCameraControlState(false);
+      setVisionActive(false);
+      speech.speak("The camera preview has stopped.");
+    });
+    state.camera.zoom = state.cameraZoom;
     await state.camera.start();
     state.visionActive = true;
     video.classList.remove("hidden");
     document.querySelector(".camera-visual")?.classList.add("hidden");
     document.querySelector("#vision-preview")?.classList.add("active");
-    document.querySelector("#vision-status").textContent = "PREVIEW ACTIVE";
-    document.querySelector("#vision-detail").textContent = "Live preview only. It cannot detect hazards or guide walking.";
-    button.innerHTML = `${icon("eye")} Stop camera preview`;
+    document.querySelector("#vision-status").textContent = getCameraStatusLabel();
+    document.querySelector("#vision-detail").textContent = "Live preview only. Request an image analysis when ready; it cannot detect hazards or guide walking.";
+    if (button) button.innerHTML = `${icon("eye")} Stop camera preview`;
+    updateCameraControlState(true);
+    document.querySelector("#camera-zoom").value = String(state.camera.zoom);
+    document.querySelector("#camera-zoom-value").textContent = `${state.camera.zoom.toFixed(1)}x${state.camera.isDigitalZoom ? " digital" : ""}`;
     setVisionActive(true);
-    speech.speak("Camera preview is on. I cannot see or detect hazards in this prototype. Please stay stationary and use your trusted mobility aid.");
+    speech.speak("Camera preview is on. I can analyze a still image when you request it, but I cannot detect hazards or guide walking. Please stay stationary and use your trusted mobility aid.");
   } catch (error) {
     console.error("Camera preview could not start:", error);
+    state.camera?.stop();
+    state.camera = null;
     state.visionActive = false;
+    document.querySelector("#vision-status").textContent = "CAMERA OFF";
+    updateCameraControlState(false);
     speech.speak(error.message || "I could not start the camera. Check your browser permissions.");
     toast(error.message || "Camera could not start.");
+  }
+}
+
+function updateCameraControlState(active) {
+  document.querySelector("#camera-zoom").disabled = !active;
+  document.querySelectorAll('[data-action="switch-camera"], [data-action="fullscreen-camera"]').forEach(button => {
+    button.disabled = !active;
+  });
+}
+
+async function setCameraZoom(value, announce = false) {
+  if (!state.camera || !state.visionActive) return;
+  try {
+    const result = await state.camera.setZoom(value);
+    state.cameraZoom = result.zoom;
+    localStorage.setItem("visionmate.cameraZoom", String(result.zoom));
+    const slider = document.querySelector("#camera-zoom");
+    const output = document.querySelector("#camera-zoom-value");
+    if (slider) slider.value = String(result.zoom);
+    if (output) output.textContent = `${result.zoom.toFixed(1)}x${result.isDigitalZoom ? " digital" : ""}`;
+    if (announce) speech.speak(`Camera zoom set to ${result.zoom.toFixed(1)} times${result.isDigitalZoom ? ", using a cropped preview" : ""}.`);
+  } catch (error) {
+    console.error("Could not change camera zoom:", error);
+    toast(`Camera zoom could not be changed: ${error.message}`);
+    speech.speak(`Camera zoom could not be changed. ${error.message}`);
+  }
+}
+
+async function switchCamera() {
+  if (!state.camera || !state.visionActive) {
+    speech.speak("Start the camera preview before switching cameras.");
+    return;
+  }
+  try {
+    const facingMode = await state.camera.switchCamera();
+    state.cameraZoom = state.camera.zoom;
+    document.querySelector("#vision-status").textContent = getCameraStatusLabel();
+    document.querySelector("#camera-zoom").value = String(state.camera.zoom);
+    document.querySelector("#camera-zoom-value").textContent = `${state.camera.zoom.toFixed(1)}x${state.camera.isDigitalZoom ? " digital" : ""}`;
+    speech.speak(`Switched to the ${facingMode === "user" ? "front" : "rear"} camera. The image may be cropped when digital zoom is active.`);
+  } catch (error) {
+    console.error("Could not switch camera:", error);
+    toast(error.message);
+    speech.speak(error.message);
+  }
+}
+
+async function toggleCameraFullscreen() {
+  const preview = document.querySelector("#vision-preview");
+  const video = document.querySelector("#camera-video");
+  try {
+    if (document.fullscreenElement === preview) {
+      await document.exitFullscreen();
+      return;
+    }
+    if (preview?.requestFullscreen) {
+      await preview.requestFullscreen();
+      return;
+    }
+    if (typeof video?.webkitEnterFullscreen === "function") {
+      video.webkitEnterFullscreen();
+      return;
+    }
+    throw new Error("Fullscreen preview is not supported by this browser.");
+  } catch (error) {
+    console.error("Could not change camera fullscreen:", error);
+    toast(error.message);
+    speech.speak(`Fullscreen is unavailable. ${error.message}`);
   }
 }
 
@@ -1046,6 +1793,9 @@ async function completeAuth(method, credentials = {}) {
   try {
     const result = await auth.signIn(method, credentials);
     logActivity(method === "reset" ? "password_reset" : "sign_in", { method }, result.firebase ? "performed" : "failed");
+    if (result.supabaseRoleError) {
+      toast(`Signed in to Firebase, but Supabase sync is unavailable: ${result.supabaseRoleError}`);
+    }
     if (method === "reset") {
       speech.speak(result.firebase ? "Password reset email sent. Check your inbox." : "Password reset requires Firebase setup. No email was sent.");
       toast(result.firebase ? "Password reset email sent." : "Firebase is not configured. No email was sent.");
@@ -1053,12 +1803,30 @@ async function completeAuth(method, credentials = {}) {
     }
     state.profile = auth.getProfile() || state.profile;
     speech.speak(result.firebase ? "You’re signed in. Welcome to VisionMate." : "You’re in the local demo. Your profile stays on this device.");
-    setPage("home", false);
     state.permissionChecked = false;
     if (result.firebase) {
+      try {
+        const cloudProfile = await loadProfileRecord();
+        if (cloudProfile) {
+          state.profile = {
+            ...state.profile,
+            firstName: cloudProfile.first_name,
+            lastName: cloudProfile.last_name,
+            age: cloudProfile.age ?? "",
+            gender: cloudProfile.gender,
+            preferredLanguage: cloudProfile.preferred_language,
+            email: cloudProfile.email || result.user.email || ""
+          };
+          auth.saveProfile(state.profile);
+        }
+      } catch (error) {
+        console.error("Could not restore the Firebase account profile:", error);
+        toast(`Could not load your cloud profile: ${error.message}`);
+      }
       syncProfile(state.profile);
       speech.speak("You’re signed in. Welcome to VisionMate.");
     }
+    setPage("home", false);
   } catch (error) {
     speech.speak(error.message);
     toast(error.message);
@@ -1067,6 +1835,43 @@ async function completeAuth(method, credentials = {}) {
 
 function handleAction(action, element) {
   switch (action) {
+    case "toggle-profile": {
+      const button = document.querySelector('[data-action="toggle-profile"]');
+      const content = document.querySelector("#profile-card-content");
+      const expanded = button?.getAttribute("aria-expanded") !== "true";
+      button?.setAttribute("aria-expanded", String(expanded));
+      content?.classList.toggle("is-expanded", expanded);
+      if (content) {
+        content.inert = !expanded;
+        content.setAttribute("aria-hidden", String(!expanded));
+      }
+      const label = button?.querySelector(".profile-expand-label");
+      if (label) label.textContent = expanded ? "Hide details" : "Show details";
+      if (!expanded) document.querySelector("#profile-form").hidden = true;
+      speech.speak(expanded ? "Profile details expanded." : "Profile details closed.");
+      break;
+    }
+    case "edit-profile": {
+      const form = document.querySelector("#profile-form");
+      if (!form) break;
+      form.hidden = false;
+      document.querySelector("#profile-first")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      setTimeout(() => document.querySelector("#profile-first")?.focus({ preventScroll: true }), 250);
+      speech.speak("Profile editor opened. Enter your details, then choose Save profile.");
+      break;
+    }
+    case "close-profile": {
+      document.querySelector("#profile-form").hidden = true;
+      const content = document.querySelector("#profile-card-content");
+      content.classList.remove("is-expanded");
+      content.inert = true;
+      content.setAttribute("aria-hidden", "true");
+      document.querySelector('[data-action="toggle-profile"]')?.setAttribute("aria-expanded", "false");
+      const label = document.querySelector(".profile-expand-label");
+      if (label) label.textContent = "Show details";
+      speech.speak("Profile details closed.");
+      break;
+    }
     case "start-onboarding":
       state.authStep = 0;
       state.onboarding = {};
@@ -1078,6 +1883,24 @@ function handleAction(action, element) {
       break;
     case "back-welcome":
       state.authMode = null; state.authStep = 0; setPage("welcome"); speech.speak("Welcome screen."); break;
+    case "start-guest":
+      state.profile = auth.startGuestSession();
+      state.navigationHistory.length = 0;
+      setPage("home", false);
+      speech.speak("Guest mode is ready. Your notes and chat history stay on this device only.");
+      break;
+    case "nav-back": {
+      const previousPage = state.navigationHistory.pop() || (auth.getSession() ? "home" : "welcome");
+      setPage(previousPage, true, false);
+      break;
+    }
+    case "open-vision-lens":
+      openVisionLens().catch(error => {
+        console.error("Could not open Vision Lens:", error);
+        speech.speak(`Vision Lens could not start. ${error.message}`);
+        toast(error.message);
+      });
+      break;
     case "auth-mode":
       state.authMode = element.dataset.mode; setPage("auth"); break;
     case "auth-home":
@@ -1109,6 +1932,8 @@ function handleAction(action, element) {
       break;
     case "google": completeAuth("google"); break;
     case "toggle-camera": toggleCamera(element); break;
+    case "switch-camera": switchCamera(); break;
+    case "fullscreen-camera": toggleCameraFullscreen(); break;
     case "read-demo":
       speech.speak("Please point the camera at the menu and hold your phone steady. Start the preview if needed, then tap Capture and describe this view. Stay safely stationary.");
       if (!state.visionActive) {
@@ -1121,7 +1946,59 @@ function handleAction(action, element) {
       break;
     case "capture-scene":
       logActivity("scene_description_requested");
-      captureAndDescribe("scene");
+      captureAndDescribe("describe");
+      break;
+    case "capture-focus":
+      logActivity("personalized_vision_requested", { focus: state.assistanceMode });
+      captureAndDescribe(state.assistanceMode);
+      break;
+    case "capture-document":
+      logActivity("document_reading_requested");
+      captureAndDescribe("reading");
+      break;
+    case "object-search": {
+      const request = document.querySelector("#vision-text")?.value.trim();
+      if (!request) { speech.speak("Type the object you want me to look for, then tap Find an object."); break; }
+      captureAndDescribe("object", request);
+      break;
+    }
+    case "monitor-toggle":
+      if (state.visionMonitoring) {
+        stopVisionMonitoring();
+        const button = document.querySelector('[data-action="monitor-toggle"]');
+        if (button) button.textContent = "Start updates";
+        speech.speak("Periodic updates stopped.");
+      } else {
+        startVisionMonitoring().catch(error => {
+          stopVisionMonitoring();
+          console.error("Could not start scene updates:", error);
+          toast(`Could not start updates: ${error.message}`);
+        });
+      }
+      break;
+    case "listen-vision":
+      if (!state.visionActive) { speech.speak("Start the camera preview while safely stationary, then ask your question."); break; }
+      speech.speak("I’m listening. Ask one question about the camera image.");
+      speech.listen({
+        onResult: question => captureAndDescribe("ask", question),
+        onError: message => { speech.speak(message); toast(message); }
+      });
+      break;
+    case "emergency":
+      setPage("emergency");
+      speech.speak("Emergency support. Calls and messages are not sent until you choose and confirm them.");
+      break;
+    case "emergency-back":
+      setPage(auth.getSession() ? "home" : "welcome");
+      break;
+    case "emergency-call":
+      callEmergencyContact();
+      break;
+    case "emergency-location":
+      requestEmergencyLocation();
+      break;
+    case "emergency-sms":
+      prepareEmergencyText();
       break;
     case "ask-clear":
       speech.speak("I can’t confirm whether a path is clear or guide you safely. Please stop and use your cane, guide dog, trusted person, or another validated mobility aid.");
@@ -1154,7 +2031,7 @@ function handleAction(action, element) {
     case "delete-item": {
       const kind = element.dataset.kind;
       const items = getLocalItems(kind).filter(item => String(item.id) !== element.dataset.id);
-      localStorage.setItem(`visionmate.${kind}`, JSON.stringify(items));
+      localStorage.setItem(localItemsKey(kind), JSON.stringify(items));
       deleteOwnedRecord(kind, element.dataset.id).catch(error => { console.error("Cloud delete failed:", error); toast(error.message); });
       renderSavedItems(); speech.speak("Removed."); break;
     }
@@ -1212,16 +2089,33 @@ function handleAction(action, element) {
       toast("Email verification is not configured in this prototype.");
       break;
     case "sign-out":
+      {
+      const wasGuest = auth.isGuest();
       logActivity("sign_out");
-      auth.signOut(); state.permissionChecked = false; setPage("welcome"); speech.speak("You have been signed out."); break;
+      auth.signOut().then(() => {
+        state.permissionChecked = false;
+        state.profile = auth.getProfile() || {};
+        state.navigationHistory.length = 0;
+        setPage(wasGuest ? "auth" : "welcome", false, false);
+        speech.speak(wasGuest
+          ? "Guest session ended. Would you like to sign in with Google or email, or continue as a guest?"
+          : "You have signed out.");
+      }).catch(error => {
+        console.error("Could not sign out of Firebase:", error);
+        toast(`Sign-out failed: ${error.message}`);
+      });
+      break;
+      }
   }
 }
+
+document.addEventListener("dragstart", event => event.preventDefault());
 
 document.addEventListener("click", event => {
   const navButton = event.target.closest("[data-nav]");
   if (navButton) {
     const page = navButton.dataset.nav;
-    if (!auth.getSession()) { speech.speak("Please continue or log in first."); setPage("welcome", false); return; }
+    if (!auth.getSession()) state.profile = auth.startGuestSession();
     pressFeedback(navButton);
     logActivity("navigation", { page });
     if (state.visionActive && page !== "vision") { state.camera?.stop(); state.camera = null; state.visionActive = false; }
@@ -1235,12 +2129,24 @@ document.addEventListener("click", event => {
   }
 });
 
+document.addEventListener("input", event => {
+  if (event.target.id === "camera-zoom") {
+    setCameraZoom(event.target.value).catch(error => {
+      console.error("Camera zoom update failed:", error);
+      toast(error.message);
+    });
+  }
+});
+
 document.addEventListener("submit", async event => {
   if (event.target.id === "auth-form") {
     event.preventDefault();
     const form = new FormData(event.target);
     const mode = state.authMode;
     await completeAuth(mode, { email: form.get("email"), password: form.get("password") });
+  } else if (event.target.id === "route-form") {
+    event.preventDefault();
+    await estimateWalkingRoute(event.target);
   } else if (event.target.id === "voice-command" || event.target.id === "vision-command") {
     event.preventDefault();
     const input = event.target.querySelector("input");
@@ -1254,24 +2160,49 @@ document.addEventListener("submit", async event => {
         toast(error.message);
       });
     } else {
-      const result = await invokeAssistant({ prompt: command, model: selectedGeminiModel() }).catch(error => {
+      let frame;
+      try {
+        frame = captureCurrentFrame();
+      } catch (error) {
+        console.error("Could not capture a camera frame:", error);
+        toast(error.message);
+        return;
+      }
+      const result = await invokeAssistant({
+        prompt: frame ? visionPrompt("ask", command) : `Answer this question in ${APP_CONFIG.languages[state.language].name}. Be concise and state uncertainty: ${command}`,
+        ...(frame || {}),
+        model: selectedGeminiModel()
+      }).catch(error => {
         console.error("Vision question failed:", error);
         speech.speak(error.message); toast(error.message); return null;
       });
       if (result) {
-        document.querySelector("#vision-caption").textContent = "Here’s what I can tell you.";
+        document.querySelector("#vision-caption").textContent = frame ? "Answer about one camera image" : "Answer";
         document.querySelector("#vision-detail").textContent = result.text;
-        speech.speak(`${result.text} AI-generated answer. Please verify important information.`);
+        speech.speak(`${result.text} Confidence is unverified. Please verify important information.`);
       }
     }
+  } else if (event.target.id === "emergency-contact-form") {
+    event.preventDefault();
+    const phone = String(new FormData(event.target).get("phone") || "").trim();
+    if (!/^[+*#,;0-9()\s.-]{3,40}$/.test(phone)) {
+      toast("Enter a valid phone number.");
+      return;
+    }
+    localStorage.setItem(emergencyContactKey(), phone);
+    document.querySelector('[data-action="emergency-call"]').disabled = false;
+    document.querySelector('[data-action="emergency-sms"]').disabled = false;
+    toast("Trusted contact saved on this device.");
+    speech.speak("Trusted contact saved on this device.");
   } else if (event.target.id === "tts-form") {
     event.preventDefault();
     const form = new FormData(event.target);
     const text = String(form.get("text") || "").trim();
     const gender = String(form.get("gender") || "female");
+    const language = String(form.get("language") || state.language);
     try {
-      speech.speak("Generating speech with Anuvaadhub.");
-      const spokenText = await speakWithProvider(text, gender, state.language);
+      speech.speak(`Generating ${APP_CONFIG.languages[language]?.name || "selected-language"} speech with Anuvaadhub.`);
+      const spokenText = await speakWithProvider(text, gender, language);
       speech.speak(`Anuvaadhub audio is playing for: ${spokenText}`);
     } catch (error) {
       console.error("Anuvaadhub text to speech failed:", error);
@@ -1326,6 +2257,12 @@ document.addEventListener("submit", async event => {
     const form = new FormData(event.target);
     state.profile = { ...state.profile, firstName: form.get("firstName").trim(), lastName: form.get("lastName").trim(), age: form.get("age") ? Number(form.get("age")) : "", gender: form.get("gender"), email: form.get("email").trim() };
     auth.saveProfile(state.profile);
+    const profileSummary = document.querySelector("#profile-summary");
+    if (profileSummary) {
+      profileSummary.textContent = [state.profile.firstName, state.profile.lastName].filter(Boolean).join(" ") || "Add your name";
+      if (state.profile.email) profileSummary.textContent += ` · ${state.profile.email}`;
+    }
+    event.target.hidden = true;
     logActivity("profile_updated");
     syncProfile(state.profile);
     speech.speak("Profile saved on this device.");
@@ -1334,7 +2271,29 @@ document.addEventListener("submit", async event => {
 });
 
 document.addEventListener("change", event => {
-  if (event.target.id === "settings-language") {
+  if (event.target.id === "assistance-mode") {
+    state.assistanceMode = event.target.value;
+    localStorage.setItem("visionmate.assistanceMode", state.assistanceMode);
+    persistSettings({ assistanceMode: state.assistanceMode });
+    speech.speak(`Assistance focus set to ${event.target.options[event.target.selectedIndex].text}.`);
+  } else if (event.target.id === "privacy-mode") {
+    state.privacyMode = event.target.checked;
+    localStorage.setItem("visionmate.privacyMode", state.privacyMode ? "on" : "off");
+    persistSettings({ privacyMode: state.privacyMode });
+    speech.speak(state.privacyMode
+      ? "People privacy mode is on. AI is asked not to describe or identify people. This does not blur images."
+      : "People privacy mode is off. AI still will not identify people.");
+  } else if (event.target.id === "offline-emergency-mode") {
+    localStorage.setItem("visionmate.emergencyMode", event.target.checked ? "on" : "off");
+    if (event.target.checked) {
+      navigator.serviceWorker?.ready.then(registration => {
+        registration.active?.postMessage({ type: "cache-emergency-screen" });
+      }).catch(error => console.error("Could not prepare offline emergency screen:", error));
+    }
+    speech.speak(event.target.checked
+      ? "Preparing the emergency screen for offline use. AI vision and message delivery are not guaranteed offline."
+      : "Offline emergency tools are disabled.");
+  } else if (event.target.id === "settings-language") {
     state.language = event.target.value;
     speech.setLanguage(state.language);
     localStorage.setItem("visionmate.language", state.language);
@@ -1384,16 +2343,59 @@ document.querySelector("#audio-toggle").addEventListener("click", event => {
     ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5Zm4 4a4 4 0 0 1 0 6m3-9a8 8 0 0 1 0 12"/></svg>'
     : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5Zm6 4 5 6m0-6-5 6"/></svg>';
   if (speech.enabled) speech.speak("Spoken feedback is on.");
-  else { window.speechSynthesis?.cancel(); document.querySelector("#live-feedback").textContent = "Spoken feedback is off."; }
+  else { speech.cancel(); document.querySelector("#live-feedback").textContent = "Spoken feedback is off."; }
 });
 
 window.addEventListener("beforeunload", () => state.camera?.stop());
 window.addEventListener("beforeunload", () => {
+  stopVisionMonitoring();
   if (state.locationWatchId !== null) navigator.geolocation?.clearWatch(state.locationWatchId);
 });
+window.addEventListener("online", updateConnectionStatus);
+window.addEventListener("offline", updateConnectionStatus);
 window.speechSynthesis?.addEventListener("voiceschanged", loadSpeechVoices);
-updateAppearance(localStorage.getItem("visionmate.theme") || "dark");
-setPage(auth.getSession() ? "home" : (auth.getProfile() ? "auth" : "welcome"), false);
-if (!auth.getProfile() && !auth.getSession()) {
-  setTimeout(() => speech.speak(APP_CONFIG.languages[state.language].greeting), 350);
+updateAppearance(localStorage.getItem("visionmate.theme") || "light");
+const initialPage = new URLSearchParams(location.search).get("emergency") === "1"
+  ? "emergency"
+  : auth.getSession() ? "home" : auth.getProfile() ? "auth" : "welcome";
+setPage(initialPage, false, false);
+updateConnectionStatus();
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch(error => {
+    console.error("Offline app shell could not be registered:", error);
+  });
+}
+{
+  let greetingStarted = false;
+  let greetingAttempted = false;
+  const greeting = initialPage === "emergency"
+    ? "VisionMate emergency screen is open. Choose a trusted contact or get your location. Nothing is sent automatically."
+    : `${APP_CONFIG.languages[state.language].greeting} Camera and microphone start only when you ask. What would you like help with?`;
+  const removeGreetingFallback = () => {
+    document.removeEventListener("pointerdown", retryAfterGesture);
+    document.removeEventListener("keydown", retryAfterGesture);
+  };
+  const speakGreeting = () => {
+    if (greetingStarted || greetingAttempted || !speech.enabled) return;
+    greetingAttempted = true;
+    speech.speak(greeting, {
+      onStart: () => {
+        greetingStarted = true;
+        removeGreetingFallback();
+      },
+      onError: () => { greetingAttempted = false; }
+    });
+  };
+  const retryAfterGesture = () => {
+    if (greetingStarted || !speech.enabled) return;
+    removeGreetingFallback();
+    speech.cancel();
+    greetingAttempted = false;
+    speakGreeting();
+  };
+  document.addEventListener("pointerdown", retryAfterGesture, { once: true });
+  document.addEventListener("keydown", retryAfterGesture, { once: true });
+  setTimeout(() => {
+    speakGreeting();
+  }, 350);
 }

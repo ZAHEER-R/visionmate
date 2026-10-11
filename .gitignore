@@ -4,5 +4,6 @@ supabase/.env
 supabase/.temp/
 node_modules/
 megathon_access_*.json
+js/runtime-config.js
 
 bumblebee2 (2).zip

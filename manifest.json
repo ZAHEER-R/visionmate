@@ -1,18 +1,27 @@
 {
   "name": "VisionMate — Your companion",
   "short_name": "VisionMate",
-  "description": "Your eyes, your voice, your independence.",
+  "description": "Accessible vision, voice, translation and emergency support tools.",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#080d13",
-  "theme_color": "#080d13",
-  "orientation": "portrait",
+  "background_color": "#fffaf5",
+  "theme_color": "#fffaf5",
+  "orientation": "any",
+  "categories": ["accessibility", "utilities"],
+  "shortcuts": [
+    {
+      "name": "Emergency help",
+      "short_name": "Emergency",
+      "url": "./?emergency=1",
+      "icons": [{ "src": "./assets/logo.png", "sizes": "137x121", "type": "image/png" }]
+    }
+  ],
   "icons": [
     {
-      "src": "./assets/icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "src": "./assets/logo.png",
+      "sizes": "137x121",
+      "type": "image/png",
+      "purpose": "any"
     }
   ]
 }

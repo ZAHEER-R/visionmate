@@ -15,6 +15,7 @@ Deno.serve(async request => {
     const prompt = typeof body.prompt === "string" ? body.prompt.trim().slice(0, 2000) : "";
     const imageBase64 = typeof body.imageBase64 === "string" ? body.imageBase64 : "";
     const mimeType = typeof body.mimeType === "string" ? body.mimeType : "image/jpeg";
+    const intentMode = body.mode === "intent";
     if (!prompt) return json({ error: "A prompt is required." }, 400);
     if (imageBase64.length > 4_000_000) return json({ error: "Image is too large. Capture a smaller frame." }, 413);
     if (imageBase64 && !["image/jpeg", "image/png", "image/webp"].includes(mimeType)) {
@@ -37,9 +38,15 @@ Deno.serve(async request => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          systemInstruction: { parts: [{ text: "You are VisionMate, an accessible assistant. Be concise, kind, and state uncertainty. Describe only clearly visible image content. Never declare any path, road, or crossing safe and never give mobility or obstacle-avoidance instructions. For possible visible hazards, state that this is uncertain and may be wrong. AI output must not replace a cane, guide dog, or trusted assistance." }] },
+          systemInstruction: { parts: [{ text: intentMode
+            ? "You are VisionMate's in-app voice command interpreter. Follow the user's prompt schema exactly and return only the requested JSON. Write the user-facing speech value in the language specified by the user prompt. Never claim access to installed apps, the operating system, contacts unless supplied, or device controls. Never identify people or infer emotion, intent, dangerousness, or threat. Never provide walking/crossing directions or claim any route is safe. Do not initiate calls/messages; return only an allowlisted app action for the frontend to present for confirmation."
+            : "You are VisionMate, an accessible assistant. Be concise, kind, and state uncertainty. Describe only clearly visible image content. Never declare any path, road, or crossing safe and never give mobility or obstacle-avoidance instructions. For possible visible hazards, state that this is uncertain and may be wrong. AI output must not replace a cane, guide dog, or trusted assistance." }] },
           contents: [{ role: "user", parts }],
-          generationConfig: { temperature: 0.2, maxOutputTokens: 500 }
+          generationConfig: {
+            temperature: intentMode ? 0 : 0.2,
+            maxOutputTokens: intentMode ? 350 : 500,
+            ...(intentMode ? { responseMimeType: "application/json" } : {})
+          }
         })
       });
       const payload = await response.json().catch(() => ({}));

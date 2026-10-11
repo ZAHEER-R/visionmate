@@ -1,7 +1,21 @@
 {
+  "functions": {
+    "source": "functions"
+  },
   "hosting": {
     "public": ".",
-    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "predeploy": ["node scripts/build-config.mjs"],
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**",
+      "**/.env",
+      "supabase/**",
+      "functions/**",
+      "scripts/**",
+      "megathon_access_*.json",
+      "*.zip"
+    ],
     "headers": [
       {
         "source": "**",

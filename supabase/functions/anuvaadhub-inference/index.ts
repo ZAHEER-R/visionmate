@@ -14,6 +14,22 @@ const languageNames: Record<string, string> = {
   pa: "Punjabi"
 };
 
+const languageTokenSuffixes: Record<string, string> = {
+  English: "EN",
+  Hindi: "HI",
+  Tamil: "TA",
+  Telugu: "TE",
+  Kannada: "KN",
+  Malayalam: "ML",
+  Punjabi: "PA"
+};
+
+function getAccessToken(language: string) {
+  const suffix = languageTokenSuffixes[language];
+  if (!suffix) return null;
+  return Deno.env.get(`ANUVAADHUB_ACCESS_TOKEN_${suffix}`) || Deno.env.get("ANUVAADHUB_ACCESS_TOKEN") || null;
+}
+
 function decodeFile(value: unknown, maxBytes: number) {
   if (typeof value !== "string" || value.length === 0 || value.length > Math.ceil(maxBytes * 4 / 3) + 8) {
     throw new Error("File is missing or larger than the allowed size.");
@@ -26,9 +42,6 @@ function decodeFile(value: unknown, maxBytes: number) {
 Deno.serve(async request => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (request.method !== "POST") return json({ error: "Method not allowed." }, 405);
-  const accessToken = Deno.env.get("ANUVAADHUB_ACCESS_TOKEN");
-  if (!accessToken) return json({ error: "Anuvaadhub access token is not configured on the server." }, 503);
-
   try {
     const body = await request.json();
     const task = body.task;
@@ -37,6 +50,12 @@ Deno.serve(async request => {
     if (!sourceLanguage) return json({ error: "Unsupported source language." }, 400);
     const targetLanguage = task === "mt" ? languageNames[body.targetLanguage] : "";
     if (task === "mt" && !targetLanguage) return json({ error: "Unsupported target language." }, 400);
+    const tokenLanguage = sourceLanguage;
+    const accessToken = getAccessToken(tokenLanguage);
+    if (!accessToken) {
+      const suffix = languageTokenSuffixes[tokenLanguage];
+      return json({ error: `Anuvaadhub ${tokenLanguage} key is not configured. Set ANUVAADHUB_ACCESS_TOKEN_${suffix} in Supabase Edge Function secrets.` }, 503);
+    }
     const route = anuvaadhubCatalog.find(item =>
       item.task === task &&
       item.sourceLanguage === sourceLanguage &&
